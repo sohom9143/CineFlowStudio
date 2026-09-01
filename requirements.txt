@@ -1,0 +1,50 @@
+# CineFlow-AI: Modular Cinematic AI Studio & Pipeline Dependencies
+# Optimized for Google Colab Free Tier (Nvidia T4 GPU / CUDA 12.x) and Local Workstation
+
+# Core Deep Learning & Tensor Framework
+torch>=2.2.0
+torchvision>=0.17.0
+torchaudio>=2.2.0
+accelerate>=0.29.0
+safetensors>=0.4.2
+
+# Generative Diffusion & Model Architecture
+diffusers>=0.28.0
+transformers>=4.40.0
+sentencepiece>=0.2.0
+
+# Facial Identity & ArcFace Embeddings (M2)
+insightface>=0.7.3
+onnxruntime>=1.17.0
+
+# Audio Processing & Phoneme Extraction (M4)
+librosa>=0.10.1
+soundfile>=0.12.1
+scipy>=1.11.0
+
+# Computer Vision & Video Processing (M3 & M5)
+opencv-python-headless>=4.9.0.80
+pillow>=10.2.0
+imageio>=2.34.0
+imageio-ffmpeg>=0.4.9
+moviepy>=1.0.3
+ffmpeg-python>=0.2.0
+
+# Super-Resolution & Frame Interpolation (M5)
+basicsr>=1.4.2
+realesrgan>=0.3.0
+
+# Gradio WebUI & Utilities (M6)
+gradio>=4.26.0
+pyyaml>=6.0.1
+pydantic>=2.6.0
+tqdm>=4.66.0
+numpy>=1.24.0,<2.0.0
+
+# Gemini Multimodal AI Agent (M2 Vision & Prompt Engineering)
+google-generativeai>=0.8.0
+google-genai>=0.1.0
+
+# Testing & Verification (M7)
+pytest>=8.0.0
+pytest-mock>=3.12.0

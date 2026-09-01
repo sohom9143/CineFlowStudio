@@ -1,0 +1,114 @@
+{
+  "styles": [
+    {
+      "id": "imax_realism",
+      "name": "IMAX 8K Cinematic Realism",
+      "description": "Ultra-sharp 70mm IMAX cinematic realism with volumetric lighting, natural skin pores and textures",
+      "prompt_prefix": "70mm IMAX film still, cinematic hyper-realism, photorealistic skin pores and natural textures, Arri Alexa 65 camera, master prime lens, natural volumetric lighting, shallow depth of field",
+      "prompt_suffix": "8k uhd, dslr, soft shadows, subtle film grain, color graded by master colorist, award-winning cinematography",
+      "negative_prompt": "cartoon, 3d, render, illustration, smooth plastic skin, anime, painting, oversaturated, low quality, blurry",
+      "guidance_scale": 7.5,
+      "num_inference_steps": 30
+    },
+    {
+      "id": "scifi_cyberpunk",
+      "name": "Sci-Fi Cyberpunk & Neo-Futurism",
+      "description": "High-tech dystopian cyberpunk world with wet neon reflections, cybernetic aesthetics, and volumetric smog",
+      "prompt_prefix": "Blade Runner 2049 and Cyberpunk 2077 aesthetic, futuristic sci-fi neon metropolis, holographic billboards, wet asphalt reflections, cyan and magenta rim light, dark moody volumetric haze",
+      "prompt_suffix": "anamorphic lens flare, atmospheric rain mist, high dynamic range, cinematic neo-noir lighting, Unreal Engine 5 render level fidelity",
+      "negative_prompt": "daylight, cheerful, pastel colors, sunny, low contrast, washed out, low quality, oversaturated yellow, vintage rustic",
+      "guidance_scale": 8.0,
+      "num_inference_steps": 30
+    },
+    {
+      "id": "high_fantasy",
+      "name": "High Fantasy & Mythological Epic",
+      "description": "Grand ethereal fantasy world with majestic castles, magical aura, and dramatic god rays",
+      "prompt_prefix": "Lord of the Rings and Game of Thrones epic high fantasy cinematography, grand mythical architecture, volumetric god rays, magical atmospheric particle embers, regal wardrobe, golden hour lighting",
+      "prompt_suffix": "epic scale, masterwork matte painting aesthetic, rich tapestries, 8k resolution, cinematic fantasy lighting",
+      "negative_prompt": "modern digital, neon, contemporary cars, modern buildings, plastic, bad anatomy, cartoon, blurry",
+      "guidance_scale": 7.5,
+      "num_inference_steps": 30
+    },
+    {
+      "id": "ghibli_anime",
+      "name": "Studio Ghibli & Modern Anime",
+      "description": "Expressive hand-painted Japanese anime aesthetic with vibrant skies and luminous painterly light",
+      "prompt_prefix": "Makoto Shinkai and Studio Ghibli cinematic animation style, hand-painted aesthetic, vibrant expressive colors, soft painterly light, lush anime skies, billowing clouds",
+      "prompt_suffix": "cel shading, high production value anime movie still, breathtaking lighting, masterpiece anime art",
+      "negative_prompt": "photorealistic, live action photo, noisy film grain, dark grim, bad drawing, distorted lineart, ugly",
+      "guidance_scale": 8.0,
+      "num_inference_steps": 32
+    },
+    {
+      "id": "gothic_horror",
+      "name": "Dark Gothic Horror & Chiaroscuro Thriller",
+      "description": "Spine-chilling atmospheric gothic horror with deep shadows, eerie fog, and dramatic candlelight",
+      "prompt_prefix": "Victorian gothic horror cinematography, Guillermo del Toro dark fantasy style, deep chiaroscuro lighting, eerie volumetric ground fog, ancient stone catacombs, flickering candlelight shadows",
+      "prompt_suffix": "desaturated cold palette, high contrast, sinister mood, 35mm film grain, haunting masterpiece",
+      "negative_prompt": "bright, sunny, cheerful, vibrant neon, happy, cartoon, low contrast, washed out",
+      "guidance_scale": 8.5,
+      "num_inference_steps": 32
+    },
+    {
+      "id": "pixar_3d_cgi",
+      "name": "Pixar / Disney 3D Stylized CGI",
+      "description": "High-end 3D animated feature film look with rich subsurface scattering and whimsical lighting",
+      "prompt_prefix": "Pixar and Disney 3D animated feature film render, beautiful subsurface scattering on skin, expressive stylized character design, warm whimsical volumetric lighting, octane render",
+      "prompt_suffix": "flawless 3d render, rich depth of field, adorable expressive facial features, raytraced global illumination",
+      "negative_prompt": "photorealistic human photo, grim dark, harsh grain, 2d flat drawing, ugly, distorted geometry",
+      "guidance_scale": 7.5,
+      "num_inference_steps": 28
+    },
+    {
+      "id": "commercial_studio",
+      "name": "Commercial Studio & Luxury Advertising",
+      "description": "Ultra-clean, crisp high-fashion commercial studio lighting with softboxes and pristine optics",
+      "prompt_prefix": "Hasselblad H6D-100c medium format commercial studio photograph, high-fashion luxury advertising aesthetic, three-point softbox lighting, pristine clean background, ultra-sharp focus",
+      "prompt_suffix": "vogue cover quality, studio color grading, crisp highlights, perfect skin tones, professional photography",
+      "negative_prompt": "grainy, dirty, blurry, dark shadows, noisy, outdoor dust, distorted face, low budget",
+      "guidance_scale": 7.0,
+      "num_inference_steps": 28
+    },
+    {
+      "id": "graphic_novel",
+      "name": "Graphic Novel & Comic Noir",
+      "description": "Bold ink lineart with dramatic halftones and stark cinematic color accents",
+      "prompt_prefix": "Sin City and Spider-Verse graphic novel art style, bold dynamic ink lines, dramatic comic book halftones, high contrast black and white with vivid selective color accent",
+      "prompt_suffix": "graphic novel splash page, masterful comic illustration, striking composition, iconic silhouette",
+      "negative_prompt": "photorealistic, washed out, low contrast, smooth 3d, realistic photograph, blurry",
+      "guidance_scale": 8.5,
+      "num_inference_steps": 30
+    },
+    {
+      "id": "kolkata_vintage",
+      "name": "North Kolkata Vintage 35mm",
+      "description": "Nostalgic 1970s-90s vintage 35mm film aesthetic with warm golden hour tones and classic Kolkata ambiance",
+      "prompt_prefix": "Kodak Portra 400 35mm film photograph, nostalgic vintage Kolkata aesthetic, warm golden hour atmospheric haze, vintage anamorphic lens flare, colonial architectural patina",
+      "prompt_suffix": "organic 35mm film grain, muted warm palette, vintage color timing, Satyajit Ray cinematic framing",
+      "negative_prompt": "digital, ultra-clean, neon, plastic, 3d render, modern digital artifacts, oversaturated blue, harsh flash",
+      "guidance_scale": 7.0,
+      "num_inference_steps": 28
+    },
+    {
+      "id": "nature_documentary",
+      "name": "Nature & Wildlife 4K Documentary",
+      "description": "National Geographic 4K wildlife and scenic aesthetic with telephoto depth and raw natural light",
+      "prompt_prefix": "National Geographic 4k nature documentary still, shot on RED V-Raptor with 400mm f/2.8 telephoto lens, crisp natural daylight, stunning environmental authenticity",
+      "prompt_suffix": "breathtaking depth of field, raw natural textures, BBC Planet Earth cinematography, razor sharp detail",
+      "negative_prompt": "studio backdrop, artificial lighting, 3d render, cartoon, plastic, bad anatomy, artifacts",
+      "guidance_scale": 7.5,
+      "num_inference_steps": 28
+    },
+    {
+      "id": "custom_neutral",
+      "name": "Custom / Neutral Cinematic",
+      "description": "Neutral cinematic baseline allowing custom modifiers and raw scene descriptions to dominate",
+      "prompt_prefix": "cinematic film still, beautiful balanced lighting, high resolution",
+      "prompt_suffix": "cinematic lighting, color graded, high quality, 4k",
+      "negative_prompt": "blurry, low quality, distorted, extra limbs, bad anatomy, artifacts",
+      "guidance_scale": 7.5,
+      "num_inference_steps": 25
+    }
+  ]
+}

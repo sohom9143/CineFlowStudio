@@ -1,0 +1,116 @@
+# =============================================================================
+# CineFlow-AI: Google Colab T4 & Local Studio Centralized Configuration
+# =============================================================================
+# Optimized for Nvidia T4 (15-16GB VRAM, Turing CC 7.5) and 12.7GB System RAM
+# Architecture: Sequential Stage Execution with Aggressive Lifecycle Purging
+# =============================================================================
+
+system:
+  device: "auto"                         # "cuda", "cpu", or "auto"
+  default_precision: "float16"           # "float16", "bfloat16", "fp8", "int8", "float32"
+  
+  # Memory & VRAM Thresholds (T4 15.3 GB total VRAM ceiling)
+  vram_threshold_warning_gb: 13.0        # Warning threshold (GB) before proactive flush
+  vram_threshold_critical_gb: 14.5       # Critical threshold (GB) triggering emergency GC/purge
+  vram_threshold_mb: 14500               # Absolute ceiling (MB) for lifecycle allocator
+  gc_threshold_mb: 12000                 # Standard GC target (MB)
+  max_system_ram_gb: 11.5                # Colab Free Tier System RAM ceiling (12.7GB max)
+  
+  # Memory Optimization Flags
+  sequential_cpu_offload: true           # Enable sequential CPU offloading for diffusion stages
+  enable_sequential_offload: true        # Alias compatibility flag
+  vae_slicing: true                      # Slices VAE decode across spatial batches
+  enable_vae_slicing: true               # Alias compatibility flag
+  vae_tiling: true                       # Tiles VAE decode for high-resolution frames
+  enable_vae_tiling: true                # Alias compatibility flag
+  enable_attention_slicing: true         # Cuts multi-head attention activation spikes
+  
+  # Stage Execution Timeouts (seconds)
+  stage_timeout_seconds: 300             # Max seconds per pipeline stage before timeout warning
+  total_render_timeout_seconds: 1200     # Max total pipeline render duration (20 minutes)
+
+paths:
+  cache_dir: "~/.cache/cineflow"
+  models_dir: "./models"
+  outputs_dir: "./outputs"
+  temp_dir: "./outputs/temp"
+  profiles_dir: "./character_profiles"
+  styles_config: "./configs/cinematic_styles.json"
+
+character_engine:
+  model_id: "InstantX/SDXL-InstantID"
+  insightface_app: "buffalo_l"
+  default_character: "dev"
+  embedding_dim: 512
+  face_detection_threshold: 0.65
+  width: 720
+  height: 480
+  default_seed: 42
+
+video_engine:
+  primary_backend: "wan2.1"              # "wan2.1" (primary), "ltx-video" (fallback), "mock"
+  wan_model_id: "Wan-AI/Wan2.1-I2V-1.3B-480P"
+  ltx_model_id: "Lightricks/LTX-Video"
+  default_frames: 81                     # 81 frames @ 24fps = 3.375s (DiT temporal formula 4k+1 / 8k+1)
+  default_fps: 24
+  default_motion_scale: 1.0
+  motion_bucket_id: 127
+  guidance_scale: 6.0
+  num_inference_steps: 30
+  quantization: "fp8"                    # "fp8", "4bit", "fp16", "none"
+  enable_cpu_offload: true
+  cpu_mock_mode: false
+
+lipsync_engine:
+  primary_backend: "liveportrait"        # "liveportrait" (primary), "wav2lip" (fallback), "mock"
+  wav2lip_checkpoint: "./models/wav2lip_gan.pth"
+  sample_rate: 16000                     # 16 kHz standardized dialogue audio
+  fps: 24
+  mel_step_size: 16                      # 16-mel chunk temporal slicing
+  audio_resample_mode: "kaiser_best"
+  face_detector: "sfd"
+  mouth_open_scale: 1.0
+  blend_feather_radius: 5
+  audio_padding: true
+  temp_dir: "outputs/temp_lipsync"
+
+post_processing:
+  upscaler_model: "RealESRGAN_x4plus"
+  enable_upscale: true
+  default_resolution: "1080p"            # "720p", "1080p", "4k"
+  target_resolution: "1080p"
+  chunk_batch_size: 4                    # Frames per upscaling chunk to prevent VRAM spikes (<3.8 GB)
+  chunk_size: 4
+  tile_size: 512                         # Spatial tiling size for large frames
+  tile_pad: 10
+  half_precision: true                   # FP16 execution on CUDA
+  rife_enabled: true
+  enable_interpolation: true             # 24fps -> 60fps interpolation
+  rife_target_fps: 60
+  target_fps: 60
+  ffmpeg:
+    codec: "libx264"
+    video_codec: "libx264"
+    pix_fmt: "yuv420p"
+    crf: 18                              # Visually lossless constant rate factor
+    preset: "fast"
+    audio_codec: "aac"
+    audio_bitrate: "192k"
+    faststart: true                      # Place moov atom at beginning for instant web streaming
+
+ui:
+  title: "CineFlow-AI Studio"
+  theme: "soft"
+  server_name: "0.0.0.0"
+  server_port: 7860
+  share: false
+  max_history_items: 50
+
+gemini_agent:
+  enabled: true
+  model: "gemini-2.5-flash"              # Primary multimodal model (also supports gemini-2.0-flash, gemini-1.5-flash)
+  temperature: 0.2
+  max_output_tokens: 1024
+  auto_character_analysis: true
+  auto_scene_refinement: true
+  prompt_enhancement_level: "cinematic_master"

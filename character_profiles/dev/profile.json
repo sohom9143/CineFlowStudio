@@ -1,0 +1,38 @@
+{
+  "id": "dev",
+  "name": "Dev",
+  "description": "28-year-old passionate Bengali software engineer turned indie filmmaker with a sharp jawline, short trimmed beard, and intense dark eyes.",
+  "gender": "male",
+  "prompt_prefix": "cinematic portrait of Dev, a 28-year-old Indian Bengali man with sharp jawline, trimmed beard, messy dark hair, intense brown eyes, wearing modern casual dark jacket",
+  "negative_prompt": "blurry, cartoon, 3d render, distorted face, extra limbs, bad eyes, low resolution, oversaturated",
+  "embedding_path": "embedding.npy",
+  "reference_images": [
+    "ref_primary.png",
+    "ref_front.png",
+    "ref_left.png",
+    "ref_right.png",
+    "ref_back.png"
+  ],
+  "views": {
+    "front": "ref_front.png",
+    "left": "ref_left.png",
+    "right": "ref_right.png",
+    "back": "ref_back.png"
+  },
+  "created_at": "2026-08-25T00:00:00Z",
+  "age": 28,
+  "tags": [
+    "protagonist",
+    "filmmaker",
+    "urban"
+  ],
+  "facial_landmarks": null,
+  "default_prompt_prefix": "cinematic portrait of Dev, a 28-year-old Indian Bengali man with sharp jawline, trimmed beard, messy dark hair, intense brown eyes, wearing modern casual dark jacket",
+  "embedding_file": "embedding.npy",
+  "multi_view_images": {
+    "front": "ref_front.png",
+    "left": "ref_left.png",
+    "right": "ref_right.png",
+    "back": "ref_back.png"
+  }
+}
