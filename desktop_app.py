@@ -49,7 +49,10 @@ if getattr(sys, "frozen", False):
 os.chdir(APP_DIR)
 
 import webview
+import webbrowser
 from app import CineFlowApp, build_gradio_ui
+
+COLAB_NOTEBOOK_URL = "https://colab.research.google.com/github/sohom9143/CineFlowStudio/blob/main/CineFlow_Colab_FreeTier.ipynb"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -85,6 +88,15 @@ def wait_for_server(url: str, timeout: float = 30.0) -> bool:
         except Exception:
             time.sleep(0.4)
     return False
+
+
+def open_colab_notebook() -> None:
+    """Opens the Google Colab Free Tier notebook in the default web browser."""
+    try:
+        logger.info(f"Opening Google Colab runtime: {COLAB_NOTEBOOK_URL}")
+        webbrowser.open(COLAB_NOTEBOOK_URL)
+    except Exception as e:
+        logger.warning(f"Could not open Google Colab in browser automatically: {e}")
 
 
 def start_gradio_server(port: int, config_path: str = "configs/colab_t4_config.yaml") -> None:
@@ -125,6 +137,12 @@ def main() -> None:
         if configs:
             config_file = str(configs[0])
 
+    # Auto-open Google Colab in browser when launching the desktop app
+    auto_colab = os.getenv("CINEFLOW_AUTO_OPEN_COLAB", "1").strip().lower() not in ("0", "false", "no")
+    if auto_colab:
+        colab_thread = threading.Thread(target=open_colab_notebook, daemon=True)
+        colab_thread.start()
+
     # Start Gradio in a background thread
     server_thread = threading.Thread(
         target=start_gradio_server,
@@ -158,3 +176,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
