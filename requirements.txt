@@ -30,9 +30,7 @@ imageio-ffmpeg>=0.4.9
 moviepy>=1.0.3
 ffmpeg-python>=0.2.0
 
-# Super-Resolution & Frame Interpolation (M5)
-basicsr>=1.4.2
-realesrgan>=0.3.0
+# Super-Resolution & Frame Interpolation (M5) - Native Pure-PyTorch RRDBNet
 
 # Gradio WebUI & Utilities (M6)
 gradio>=4.26.0

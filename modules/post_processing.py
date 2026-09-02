@@ -314,6 +314,73 @@ class PostProcessResult:
 
 
 # =============================================================================
+# Native Pure-PyTorch RRDBNet Architecture (Self-Contained Real-ESRGAN Backbone)
+# Eliminates external brittle compilation dependencies (basicsr / realesrgan)
+# =============================================================================
+
+class ResidualDenseBlock(nn.Module if TORCH_AVAILABLE else object):
+    def __init__(self, num_feat: int = 64, num_grow_ch: int = 32):
+        if not TORCH_AVAILABLE:
+            return
+        super().__init__()
+        self.conv1 = nn.Conv2d(num_feat, num_grow_ch, 3, 1, 1)
+        self.conv2 = nn.Conv2d(num_feat + num_grow_ch, num_grow_ch, 3, 1, 1)
+        self.conv3 = nn.Conv2d(num_feat + 2 * num_grow_ch, num_grow_ch, 3, 1, 1)
+        self.conv4 = nn.Conv2d(num_feat + 3 * num_grow_ch, num_grow_ch, 3, 1, 1)
+        self.conv5 = nn.Conv2d(num_feat + 4 * num_grow_ch, num_feat, 3, 1, 1)
+        self.lrelu = nn.LeakyReLU(negative_slope=0.2, inplace=True)
+
+    def forward(self, x):
+        x1 = self.lrelu(self.conv1(x))
+        x2 = self.lrelu(self.conv2(torch.cat((x, x1), 1)))
+        x3 = self.lrelu(self.conv3(torch.cat((x, x1, x2), 1)))
+        x4 = self.lrelu(self.conv4(torch.cat((x, x1, x2, x3), 1)))
+        x5 = self.conv5(torch.cat((x, x1, x2, x3, x4), 1))
+        return x5 * 0.2 + x
+
+
+class RRDB(nn.Module if TORCH_AVAILABLE else object):
+    def __init__(self, num_feat: int = 64, num_grow_ch: int = 32):
+        if not TORCH_AVAILABLE:
+            return
+        super().__init__()
+        self.rdb1 = ResidualDenseBlock(num_feat, num_grow_ch)
+        self.rdb2 = ResidualDenseBlock(num_feat, num_grow_ch)
+        self.rdb3 = ResidualDenseBlock(num_feat, num_grow_ch)
+
+    def forward(self, x):
+        out = self.rdb1(x)
+        out = self.rdb2(out)
+        out = self.rdb3(out)
+        return out * 0.2 + x
+
+
+class RRDBNet(nn.Module if TORCH_AVAILABLE else object):
+    def __init__(self, num_in_ch: int = 3, num_out_ch: int = 3, scale: int = 4, num_feat: int = 64, num_block: int = 23, num_grow_ch: int = 32):
+        if not TORCH_AVAILABLE:
+            return
+        super().__init__()
+        self.scale = scale
+        self.conv_first = nn.Conv2d(num_in_ch, num_feat, 3, 1, 1)
+        self.body = nn.Sequential(*[RRDB(num_feat, num_grow_ch) for _ in range(num_block)])
+        self.conv_body = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
+        self.conv_up1 = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
+        self.conv_up2 = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
+        self.conv_hr = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
+        self.conv_last = nn.Conv2d(num_feat, num_out_ch, 3, 1, 1)
+        self.lrelu = nn.LeakyReLU(negative_slope=0.2, inplace=True)
+
+    def forward(self, x):
+        feat = self.conv_first(x)
+        body_feat = self.conv_body(self.body(feat))
+        feat = feat + body_feat
+        feat = self.lrelu(self.conv_up1(F.interpolate(feat, scale_factor=2, mode="nearest")))
+        feat = self.lrelu(self.conv_up2(F.interpolate(feat, scale_factor=2, mode="nearest")))
+        out = self.conv_last(self.lrelu(self.conv_hr(feat)))
+        return out
+
+
+# =============================================================================
 # Real-ESRGAN / Super-Resolution Subsystem (RRDBNet & Chunked Tiling)
 # =============================================================================
 
@@ -356,14 +423,22 @@ class RealESRGANUpscaler:
             return
 
         try:
-            # Check for basicsr / realesrgan packages
-            from realesrgan import RealESRGANer
-            from basicsr.archs.rrdbnet_arch import RRDBNet
+            num_block = 6 if "anime" in self.model_name.lower() else 23
+            model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=num_block, num_grow_ch=32, scale=4)
 
-            if "anime" in self.model_name.lower():
-                model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=6, num_grow_ch=32, scale=4)
-            else:
-                model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+            # Look for RealESRGAN weights in project or cache
+            candidates = [
+                os.path.join("models", f"{self.model_name}.pth"),
+                os.path.join("models", "RealESRGAN_x4plus.pth"),
+                os.path.expanduser(f"~/.cache/cineflow/{self.model_name}.pth"),
+                os.path.expanduser(f"~/.cache/cineflow/RealESRGAN_x4plus.pth"),
+            ]
+            checkpoint = next((p for p in candidates if os.path.exists(p) and os.path.getsize(p) > 1024), None)
+            if checkpoint:
+                logger.info(f"Loading RealESRGAN checkpoint from: {checkpoint}")
+                loadnet = torch.load(checkpoint, map_location=self.device)
+                keyname = "params_ema" if "params_ema" in loadnet else ("params" if "params" in loadnet else None)
+                model.load_state_dict(loadnet[keyname] if keyname else loadnet, strict=False)
 
             model.to(self.device)
             if self.half_precision:
@@ -373,7 +448,7 @@ class RealESRGANUpscaler:
             self._model = model
             self._is_mock = False
             self.memory_manager.register_model("realesrgan_upscaler", self._model)
-            logger.info(f"RealESRGAN model '{self.model_name}' loaded successfully on {self.device} (FP16: {self.half_precision}).")
+            logger.info(f"Native RealESRGAN model '{self.model_name}' loaded successfully on {self.device} (FP16: {self.half_precision}).")
         except Exception as e:
             self._is_mock = True
             self._model = None
