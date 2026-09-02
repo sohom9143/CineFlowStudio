@@ -498,12 +498,18 @@ def synthesize_dialogue_waveform(
     duration_sec: float = 3.375,
     sample_rate: int = 16000,
     base_freq: float = 140.0,
+    duration_seconds: Optional[float] = None,
+    output_path: Optional[str] = None,
 ) -> Tuple[np.ndarray, str]:
     """
     Synthesizes a realistic speech-like harmonic formant audio waveform for Bengali dialogue testing.
     Combines glottal pulse fundamentals with Bengali vowel formant resonances (F1, F2, F3)
     and syllabic cadence envelopes (4 Hz cadence typical of human conversational speech).
+    Supports optional output_path file export.
     """
+    if duration_seconds is not None:
+        duration_sec = duration_seconds
+
     t = np.linspace(0.0, duration_sec, int(sample_rate * duration_sec), endpoint=False)
     
     # Syllabic envelope modulation (approx 3.5 - 4.5 syllables per second)
@@ -537,6 +543,19 @@ def synthesize_dialogue_waveform(
     max_amp = np.max(np.abs(combined))
     if max_amp > 1e-5:
         combined = (combined / max_amp) * 0.90
+
+    if output_path:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        int16_samples = np.clip(combined * 32767.0, -32768.0, 32767.0).astype(np.int16)
+        if SCIPY_AVAILABLE:
+            scipy.io.wavfile.write(output_path, sample_rate, int16_samples)
+        else:
+            import wave
+            with wave.open(output_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sample_rate)
+                wf.writeframes(int16_samples.tobytes())
 
     return combined.astype(np.float32), text_or_phonemes
 
