@@ -35,6 +35,7 @@ paths:
   outputs_dir: "./outputs"
   temp_dir: "./outputs/temp"
   profiles_dir: "./character_profiles"
+  scene_trees_dir: "./scene_trees"
   styles_config: "./configs/cinematic_styles.json"
 
 character_engine:

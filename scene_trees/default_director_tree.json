@@ -1,0 +1,61 @@
+{
+  "version": "1.0",
+  "project_title": "CineFlow Cinematic Storyboard",
+  "created_at": "2026-09-02T11:00:00Z",
+  "root_character": {
+    "character_id": "dev",
+    "name": "Dev",
+    "canonical_face_embedding": "character_profiles/dev/embedding.npy",
+    "facial_invariants": "28-year-old passionate Bengali software engineer turned indie filmmaker with a sharp jawline, short trimmed beard, and intense dark eyes",
+    "negative_prompt": "blurry, cartoon, 3d render, distorted face, extra limbs, bad eyes, low resolution, oversaturated"
+  },
+  "tree_nodes": [
+    {
+      "node_id": "shot_001_root",
+      "parent_id": null,
+      "scene_title": "Scene 1: Midnight Rain Alley (Kolkata)",
+      "shot_type": "Establishing Master Shot",
+      "ingredients": {
+        "camera_movement": "Slow cinematic push-in dolly forward with 35mm anamorphic lens, shallow depth of field",
+        "lighting_chiaroscuro": "Vibrant neon cyan & magenta rim lighting with wet rain reflections on asphalt",
+        "environment_world": "Rainy old North Kolkata alleyway with retro vintage lampposts and neon tram tracks",
+        "wardrobe_styling": "Black high-collar waterproof cyberpunk trenchcoat, drenched collar, rolled cuffs",
+        "dialogue_bengali": "রাত যত গভীর হয়, শহরের এই অলিগলিগুলো যেন তাদের নিজস্ব গল্প বলতে শুরু করে...",
+        "dialogue_speaker": "Dev"
+      },
+      "video_generation": {
+        "engine": "wan2.1",
+        "seed": 42091,
+        "frames": 81,
+        "fps": 24,
+        "status": "ready"
+      }
+    },
+    {
+      "node_id": "shot_002_branch_a",
+      "parent_id": "shot_001_root",
+      "scene_title": "Scene 2: Morning Cafe Dialogue Jump",
+      "shot_type": "Close-up Portrait Dialogue",
+      "inheritance": {
+        "inherited_face": true,
+        "inherited_character_id": "dev",
+        "branch_variation": "wardrobe_and_time_jump"
+      },
+      "ingredients": {
+        "camera_movement": "Intimate eye-level 85mm f/1.4 portrait lens, subtle organic handheld float",
+        "lighting_chiaroscuro": "Soft morning golden hour sun rays slicing through wooden cafe blinds",
+        "environment_world": "Quiet Kolkata Coffee House interior, antique wooden tables, steaming cup of tea",
+        "wardrobe_styling": "Handwoven beige cotton kurta with folded sleeves and round brass buttons",
+        "dialogue_bengali": "তুমি কি কখনো ভেবে দেখেছো, আমরা যে স্বপ্নগুলো দেখি সেগুলো আসলে কার?",
+        "dialogue_speaker": "Dev"
+      },
+      "video_generation": {
+        "engine": "wan2.1",
+        "seed": 42092,
+        "frames": 81,
+        "fps": 24,
+        "status": "ready"
+      }
+    }
+  ]
+}
