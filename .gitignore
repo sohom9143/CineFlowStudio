@@ -1,4 +1,4 @@
-﻿# Environment & Secrets
+# Environment & Secrets
 .env
 *.env
 .env.*
@@ -47,6 +47,8 @@ models/
 *.bin
 *.onnx
 *.safetensors
+*.exe
+*.spec
 
 # OS / IDE
 .DS_Store
