@@ -706,7 +706,7 @@ class CineFlowApp:
             if not audio_raw or not os.path.exists(audio_raw):
                 temp_audio_out = os.path.join(self.temp_dir, f"dialogue_{int(time.time())}.wav")
                 dur_sec = max(1.0, len(raw_video_frames) / 24.0)
-                synthesize_dialogue_waveform(duration_seconds=dur_sec, output_path=temp_audio_out)
+                synthesize_dialogue_waveform(duration_sec=dur_sec, output_path=temp_audio_out)
                 processed_audio_path = temp_audio_out
 
             lipsync_cfg = LipSyncConfig(
