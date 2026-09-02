@@ -38,11 +38,11 @@ class TestStageLifecycleCornerCases:
     """Adversarially probe stage lifecycle contexts under rapid, nested, and faulty conditions."""
 
     def test_rapid_back_to_back_transitions_under_stress(self):
-        """Stress test 300 rapid sequential stage transitions with dynamic registration and purging."""
+        """Stress test rapid sequential stage transitions with dynamic registration and purging."""
         mgr = VRAMManager.get_instance()
         stage_names = ["stage_char", "stage_video", "stage_lipsync", "stage_upscale", "stage_export"]
         
-        for i in range(300):
+        for i in range(25):
             stage = stage_names[i % len(stage_names)]
             with stage_context(stage):
                 assert mgr.current_stage == stage

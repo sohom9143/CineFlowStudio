@@ -540,8 +540,8 @@ class RealESRGANUpscaler:
         if w_in == target_width and h_in == target_height:
             return frame.copy()
 
-        # If tile_size is 0 or frame is smaller than tile_size, upscale directly
-        if tile_size <= 0 or (w_in <= tile_size and h_in <= tile_size):
+        # If no neural model is loaded or mock mode, execute direct algorithmic resize without tiling
+        if self._model is None or self._is_mock or tile_size <= 0 or (w_in <= tile_size and h_in <= tile_size):
             if self._model is not None and not self._is_mock:
                 scale = max(target_width / w_in, target_height / h_in)
                 res = self._upscale_tile(frame, scale)
@@ -923,6 +923,9 @@ class AudioVideoMuxer:
             cmd.extend([
                 "-i", str(os.path.abspath(audio_path)),
                 "-c:a", audio_codec,
+                "-strict", "-2",
+                "-ar", "44100",
+                "-ac", "2",
                 "-b:a", audio_bitrate,
                 "-shortest",  # Sync duration to shortest stream
             ])
@@ -948,12 +951,15 @@ class AudioVideoMuxer:
             )
 
             # Stream raw RGB frame bytes into FFmpeg stdin
-            for frame in frames:
-                if frame.shape[0] != h or frame.shape[1] != w:
-                    frame = cv2.resize(frame, (w, h)) if CV2_AVAILABLE else np.array(Image.fromarray(frame).resize((w, h)))
-                process.stdin.write(frame.astype(np.uint8).tobytes())
+            try:
+                for frame in frames:
+                    if frame.shape[0] != h or frame.shape[1] != w:
+                        frame = cv2.resize(frame, (w, h)) if CV2_AVAILABLE else np.array(Image.fromarray(frame).resize((w, h)))
+                    process.stdin.write(frame.astype(np.uint8).tobytes())
+                process.stdin.close()
+            except (BrokenPipeError, OSError) as pipe_err:
+                logger.warning(f"FFmpeg stdin pipe interrupted: {pipe_err}")
 
-            process.stdin.close()
             stdout, stderr = process.communicate()
 
             if process.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
@@ -1018,6 +1024,7 @@ class AudioVideoMuxer:
         frames: List[np.ndarray],
         output_path: str,
         fps: int = 24,
+        audio_path: Optional[str] = None,
     ) -> bool:
         """Encodes frames to MP4 video using OpenCV VideoWriter."""
         if not CV2_AVAILABLE or not frames:
@@ -1048,6 +1055,33 @@ class AudioVideoMuxer:
                 writer.write(bgr)
 
             writer.release()
+
+            # If FFmpeg binary is available and audio is provided, remux audio into the OpenCV video
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0 and self._ffmpeg_bin and audio_path and os.path.exists(audio_path):
+                temp_remux = output_path + ".remux.mp4"
+                remux_cmd = [
+                    self._ffmpeg_bin, "-y",
+                    "-i", str(os.path.abspath(output_path)),
+                    "-i", str(os.path.abspath(audio_path)),
+                    "-c:v", "copy",
+                    "-c:a", "aac", "-strict", "-2", "-ar", "44100", "-ac", "2",
+                    "-shortest",
+                    "-movflags", "+faststart",
+                    str(os.path.abspath(temp_remux)),
+                ]
+                try:
+                    res = subprocess.run(remux_cmd, capture_output=True, text=True, timeout=30)
+                    if res.returncode == 0 and os.path.exists(temp_remux) and os.path.getsize(temp_remux) > 0:
+                        shutil.move(temp_remux, output_path)
+                        logger.info(f"OpenCV video successfully multiplexed with audio via FFmpeg: '{output_path}'.")
+                except Exception as remux_e:
+                    logger.debug(f"OpenCV audio remux failed: {remux_e}")
+                    if os.path.exists(temp_remux):
+                        try:
+                            os.remove(temp_remux)
+                        except OSError:
+                            pass
+
             return os.path.exists(output_path) and os.path.getsize(output_path) > 0
         except Exception as e:
             logger.warning(f"OpenCV video writer failed: {e}")
@@ -1135,6 +1169,7 @@ class AudioVideoMuxer:
                 frames=norm_frames,
                 output_path=abs_output_path,
                 fps=fps,
+                audio_path=audio_path,
             )
 
         # 4. Final verification

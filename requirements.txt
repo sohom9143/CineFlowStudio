@@ -9,8 +9,8 @@ accelerate>=0.29.0
 safetensors>=0.4.2
 
 # Generative Diffusion & Model Architecture
-diffusers>=0.28.0
-transformers>=4.40.0
+diffusers>=0.33.0
+transformers>=4.48.0
 sentencepiece>=0.2.0
 
 # Facial Identity & ArcFace Embeddings (M2)

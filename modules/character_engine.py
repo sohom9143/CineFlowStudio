@@ -1696,7 +1696,7 @@ class CharacterStudio:
         )
 
         # Check if active CUDA GPU and diffusers InstantID pipeline can be loaded
-        if self.memory_manager.is_cuda and TORCH_AVAILABLE and torch.cuda.is_available() and kwargs.get("force_gpu", False):
+        if self.memory_manager.is_cuda and TORCH_AVAILABLE and torch.cuda.is_available() and kwargs.get("enable_gpu", True):
             try:
                 return self._generate_with_instantid_gpu(
                     character=character,

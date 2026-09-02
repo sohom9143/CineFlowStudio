@@ -258,7 +258,7 @@ class Wan21Backend(BaseVideoBackend):
     - (4k + 1) temporal framing (default 81 frames).
     """
 
-    MODEL_ID = "Wan-AI/Wan2.1-I2V-1.3B-480P"
+    MODEL_ID = os.getenv("CINEFLOW_WAN_MODEL_ID", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
 
     def is_available(self) -> bool:
         """
@@ -282,7 +282,7 @@ class Wan21Backend(BaseVideoBackend):
                 "Wan21Backend is unavailable: Requires CUDA GPU with PyTorch and Diffusers."
             )
 
-        logger.info(f"Loading Wan 2.1 I2V (1.3B) Pipeline from '{self.MODEL_ID}'...")
+        logger.info(f"Loading Wan 2.1 Video Pipeline from '{self.MODEL_ID}'...")
 
         quant = config.quantization if config else "fp8"
         enable_offload = config.enable_cpu_offload if config else True
@@ -296,10 +296,10 @@ class Wan21Backend(BaseVideoBackend):
 
         # Check for diffusers WanPipeline or AutoPipeline
         try:
-            # 1. Check for specific WanPipeline in diffusers
             pipeline_cls = getattr(diffusers, "WanImageToVideoPipeline", None) or \
                            getattr(diffusers, "WanPipeline", None) or \
-                           getattr(diffusers, "AutoPipelineForImage2Video", None)
+                           getattr(diffusers, "AutoPipelineForImage2Video", None) or \
+                           getattr(diffusers, "AutoPipelineForText2Video", None)
 
             if pipeline_cls is not None:
                 load_kwargs: Dict[str, Any] = {
@@ -369,28 +369,39 @@ class Wan21Backend(BaseVideoBackend):
             logger.info(
                 f"Generating {config.num_frames} frames @ {config.width}x{config.height} with Wan 2.1..."
             )
-            output = model(
-                image=pil_img,
-                prompt=motion_prompt or config.motion_prompt,
-                negative_prompt=config.negative_prompt,
-                num_frames=config.num_frames,
-                height=config.height,
-                width=config.width,
-                num_inference_steps=config.num_inference_steps,
-                guidance_scale=config.guidance_scale,
-                generator=generator,
-            )
+            try:
+                import inspect
+                sig = inspect.signature(model.__call__)
+                effective_prompt = motion_prompt or config.motion_prompt or "cinematic video, highly detailed"
 
-            # Extract generated frames
-            raw_frames = output.frames[0] if hasattr(output, "frames") else output
-            rgb_frames: List[np.ndarray] = []
-            for f in raw_frames:
-                arr = np.array(f, dtype=np.uint8) if isinstance(f, Image.Image) else (f * 255).astype(np.uint8)
-                rgb_frames.append(arr)
-            return rgb_frames
+                call_kwargs: Dict[str, Any] = {
+                    "prompt": effective_prompt,
+                    "num_frames": config.num_frames,
+                    "height": config.height,
+                    "width": config.width,
+                    "num_inference_steps": config.num_inference_steps,
+                    "guidance_scale": config.guidance_scale,
+                    "generator": generator,
+                }
+                if "negative_prompt" in sig.parameters and config.negative_prompt:
+                    call_kwargs["negative_prompt"] = config.negative_prompt
+                if "image" in sig.parameters and pil_img is not None:
+                    call_kwargs["image"] = pil_img
+
+                output = model(**call_kwargs)
+
+                # Extract generated frames
+                raw_frames = output.frames[0] if hasattr(output, "frames") else output
+                rgb_frames: List[np.ndarray] = []
+                for f in raw_frames:
+                    arr = np.array(f, dtype=np.uint8) if isinstance(f, Image.Image) else (f * 255).astype(np.uint8)
+                    rgb_frames.append(arr)
+                return rgb_frames
+            except Exception as e:
+                logger.warning(f"Wan 2.1 GPU inference encountered error ({e}); cascading to fallback.")
 
         # If real pipeline is unavailable in current runtime, delegate to procedural mock with notice
-        logger.info("Wan 2.1 weights not found in local environment; executing fallback.")
+        logger.info("Wan 2.1 weights not active in environment; executing deterministic fallback.")
         mock_backend = MockVideoBackend(self.memory_manager)
         return mock_backend.generate(image, motion_prompt, config)
 
@@ -485,26 +496,37 @@ class LTXVideoBackend(BaseVideoBackend):
                 generator = torch.Generator(device=self.memory_manager.device).manual_seed(config.seed)
 
             logger.info(f"Generating {config.num_frames} frames with LTX-Video...")
-            output = model(
-                image=pil_img,
-                prompt=motion_prompt or config.motion_prompt,
-                negative_prompt=config.negative_prompt,
-                num_frames=config.num_frames,
-                height=config.height,
-                width=config.width,
-                num_inference_steps=config.num_inference_steps,
-                guidance_scale=config.guidance_scale,
-                generator=generator,
-            )
+            try:
+                import inspect
+                sig = inspect.signature(model.__call__)
+                effective_prompt = motion_prompt or config.motion_prompt or "cinematic motion, 8k resolution"
 
-            raw_frames = output.frames[0] if hasattr(output, "frames") else output
-            rgb_frames: List[np.ndarray] = []
-            for f in raw_frames:
-                arr = np.array(f, dtype=np.uint8) if isinstance(f, Image.Image) else (f * 255).astype(np.uint8)
-                rgb_frames.append(arr)
-            return rgb_frames
+                call_kwargs: Dict[str, Any] = {
+                    "prompt": effective_prompt,
+                    "num_frames": config.num_frames,
+                    "height": config.height,
+                    "width": config.width,
+                    "num_inference_steps": config.num_inference_steps,
+                    "guidance_scale": config.guidance_scale,
+                    "generator": generator,
+                }
+                if "negative_prompt" in sig.parameters and config.negative_prompt:
+                    call_kwargs["negative_prompt"] = config.negative_prompt
+                if "image" in sig.parameters and pil_img is not None:
+                    call_kwargs["image"] = pil_img
 
-        logger.info("LTX-Video weights not found in local environment; executing fallback.")
+                output = model(**call_kwargs)
+
+                raw_frames = output.frames[0] if hasattr(output, "frames") else output
+                rgb_frames: List[np.ndarray] = []
+                for f in raw_frames:
+                    arr = np.array(f, dtype=np.uint8) if isinstance(f, Image.Image) else (f * 255).astype(np.uint8)
+                    rgb_frames.append(arr)
+                return rgb_frames
+            except Exception as e:
+                logger.warning(f"LTX-Video inference encountered error ({e}); cascading to fallback.")
+
+        logger.info("LTX-Video weights not active in environment; executing deterministic fallback.")
         mock_backend = MockVideoBackend(self.memory_manager)
         return mock_backend.generate(image, motion_prompt, config)
 

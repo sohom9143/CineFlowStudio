@@ -63,8 +63,8 @@ HUGGINGFACE_MODELS: Dict[str, Dict[str, str]] = {
         "category": "Character Studio (InstantID SDXL)",
         "type": "huggingface_repo",
     },
-    "Wan-AI/Wan2.1-I2V-1.3B-480P": {
-        "category": "Video Engine (Wan 2.1 I2V DiT)",
+    "Wan-AI/Wan2.1-T2V-1.3B-Diffusers": {
+        "category": "Video Engine (Wan 2.1 1.3B DiT)",
         "type": "huggingface_repo",
     },
     "Lightricks/LTX-Video": {
