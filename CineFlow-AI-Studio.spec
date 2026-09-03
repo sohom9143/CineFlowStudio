@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('configs', 'configs'), ('character_profiles', 'character_profiles'), ('modules', 'modules')]
+datas = [('configs', 'configs'), ('character_profiles', 'character_profiles'), ('modules', 'modules'), ('static', 'static'), ('database', 'database'), ('code.html', '.')]
 binaries = []
-hiddenimports = ['clr', 'yaml', 'PIL', 'numpy', 'modules.model_downloader', 'modules.memory_manager', 'modules.character_engine', 'modules.video_engine', 'modules.lipsync_engine', 'modules.post_processing']
+hiddenimports = ['clr', 'yaml', 'PIL', 'numpy', 'modules.model_downloader', 'modules.memory_manager', 'modules.character_engine', 'modules.character_database', 'modules.video_engine', 'modules.lipsync_engine', 'modules.post_processing', 'email.mime.multipart', 'email.mime.text']
 tmp_ret = collect_all('groovy')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('safehttpx')
