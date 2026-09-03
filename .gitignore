@@ -56,3 +56,7 @@ Thumbs.db
 .vscode/
 .idea/
 .agents/
+
+# User-Enrolled Characters (Preserve .gitkeep only)
+character_profiles/*/
+!character_profiles/.gitkeep

@@ -36,6 +36,9 @@ from modules.memory_manager import (
 # Import Gemini Vision Agent
 from modules.agent_gemini import CharacterGeminiAgent, resolve_gemini_model_name
 
+# Import Character Database & Consistency Reinforcement
+from modules.character_database import CharacterDatabase, get_character_database
+
 # Optional PyTorch & Neural Framework imports
 try:
     import torch
@@ -121,6 +124,7 @@ class CharacterProfile:
     facial_landmarks: Optional[Dict[str, Any]] = None
     gemini_traits: Optional[Dict[str, Any]] = None
     face_adapter: Optional[Dict[str, Any]] = None
+    facial_consistency_tree: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert profile to a JSON-serializable dictionary."""
@@ -131,6 +135,7 @@ class CharacterProfile:
         d["multi_view_images"] = self.views
         d["gemini_traits"] = self.gemini_traits
         d["face_adapter"] = self.face_adapter
+        d["facial_consistency_tree"] = self.facial_consistency_tree
         return d
 
     @classmethod
@@ -187,6 +192,10 @@ class CharacterProfile:
         if not isinstance(face_adapter, dict):
             face_adapter = None
 
+        consistency_tree = data.get("facial_consistency_tree")
+        if not isinstance(consistency_tree, dict):
+            consistency_tree = None
+
         return cls(
             id=char_id,
             name=name,
@@ -203,6 +212,7 @@ class CharacterProfile:
             facial_landmarks=landmarks,
             gemini_traits=gemini_traits,
             face_adapter=face_adapter,
+            facial_consistency_tree=consistency_tree,
         )
 
 
@@ -359,6 +369,7 @@ def render_procedural_character_view(
     width: int = 400,
     height: int = 400,
     seed: int = 42,
+    is_female: Optional[bool] = None,
 ) -> Image.Image:
     """
     Renders an identity-consistent multi-angle view (front 0°, left 90°, back 180°, right 270°)
@@ -373,14 +384,15 @@ def render_procedural_character_view(
     skin_base = np.array([210, 165, 135], dtype=np.float32)
     rim_light = np.array([230, 185, 120], dtype=np.float32)
 
-    char_gender = (character.gender if character else "neutral").lower()
-    if "meghla" in str(character_id).lower() or "female" in char_gender:
+    if is_female is None:
+        char_gender = (character.gender if character else "neutral").lower()
+        is_female = "female" in char_gender or "woman" in char_gender or "girl" in char_gender
+
+    if is_female:
         skin_base = np.array([235, 190, 160], dtype=np.float32)
         hair_color = (30, 22, 20, 255)
-    elif "cha_kaku" in str(character_id).lower():
-        skin_base = np.array([190, 140, 105], dtype=np.float32)
-        hair_color = (180, 180, 180, 255)
     else:
+        skin_base = np.array([210, 165, 135], dtype=np.float32)
         hair_color = (25, 20, 18, 255)
 
     y_coords = np.linspace(0, 1, height)[:, np.newaxis]
@@ -410,7 +422,7 @@ def render_procedural_character_view(
     if norm_angle in ("front", "0", "0°"):
         # 1. Front View (0°)
         draw.ellipse(head_box, fill=skin_color)
-        if "female" in char_gender or "meghla" in str(character_id).lower():
+        if is_female:
             draw.ellipse([cx - int(head_w * 0.65), cy - int(head_h * 0.6), cx + int(head_w * 0.65), cy + int(head_h * 0.5)], fill=hair_color)
             draw.ellipse(head_box, fill=skin_color)
             draw.chord([cx - head_w // 2, cy - head_h // 2 - 5, cx + head_w // 2, cy - int(head_h * 0.1)], start=180, end=360, fill=hair_color)
@@ -440,7 +452,7 @@ def render_procedural_character_view(
         draw.polygon([(nose_tip_x, nose_y), (cx - int(head_w * 0.45), nose_y - 12), (cx - int(head_w * 0.45), nose_y + 12)], fill=skin_color)
         # Hair for left profile
         draw.chord([cx - int(head_w * 0.4), cy - head_h // 2 - 15, cx + int(head_w * 0.5), cy + int(head_h * 0.3)], start=180, end=360, fill=hair_color)
-        if "female" in char_gender or "meghla" in str(character_id).lower():
+        if is_female:
             draw.ellipse([cx - int(head_w * 0.2), cy - int(head_h * 0.5), cx + int(head_w * 0.6), cy + int(head_h * 0.6)], fill=hair_color)
         # Single profile eye
         eye_x = cx - int(head_w * 0.35)
@@ -463,7 +475,7 @@ def render_procedural_character_view(
         draw.polygon([(nose_tip_x, nose_y), (cx + int(head_w * 0.45), nose_y - 12), (cx + int(head_w * 0.45), nose_y + 12)], fill=skin_color)
         # Hair for right profile
         draw.chord([cx - int(head_w * 0.5), cy - head_h // 2 - 15, cx + int(head_w * 0.4), cy + int(head_h * 0.3)], start=180, end=360, fill=hair_color)
-        if "female" in char_gender or "meghla" in str(character_id).lower():
+        if is_female:
             draw.ellipse([cx - int(head_w * 0.6), cy - int(head_h * 0.5), cx + int(head_w * 0.2), cy + int(head_h * 0.6)], fill=hair_color)
         # Single profile eye
         eye_x = cx + int(head_w * 0.35)
@@ -480,7 +492,7 @@ def render_procedural_character_view(
         # 4. Back / Rear View (180°)
         draw.ellipse(head_box, fill=skin_color)
         # Full rear hair coverage
-        if "female" in char_gender or "meghla" in str(character_id).lower():
+        if is_female:
             draw.ellipse([cx - int(head_w * 0.65), cy - int(head_h * 0.6), cx + int(head_w * 0.65), cy + int(head_h * 0.65)], fill=hair_color)
         else:
             draw.ellipse([cx - int(head_w * 0.55), cy - int(head_h * 0.6), cx + int(head_w * 0.55), cy + int(head_h * 0.2)], fill=hair_color)
@@ -516,11 +528,13 @@ class CharacterStudio:
         styles_path: str = "configs/cinematic_styles.json",
         memory_manager: Optional[VRAMManager] = None,
         gemini_agent: Optional[CharacterGeminiAgent] = None,
+        character_database: Optional[CharacterDatabase] = None,
     ) -> None:
         self.profiles_dir = profiles_dir
         self.styles_path = styles_path
         self.memory_manager = memory_manager or VRAMManager.get_instance()
         self.gemini_agent = gemini_agent or CharacterGeminiAgent()
+        self.db = character_database or get_character_database()
 
         self._profiles_cache: Dict[str, CharacterProfile] = {}
         self._embeddings_cache: Dict[str, np.ndarray] = {}
@@ -702,6 +716,20 @@ class CharacterStudio:
                 logger.debug(f"Loaded character profile: '{profile.name}' ({profile.id})")
             except Exception as e:
                 logger.error(f"Failed to load profile from '{profile_json}': {e}")
+
+        # Also synchronize from CharacterDatabase (MongoDB / local JSON store)
+        if hasattr(self, "db") and self.db is not None:
+            try:
+                for doc in self.db.list_characters():
+                    cid = doc.get("id")
+                    if cid and cid not in self._profiles_cache:
+                        p = CharacterProfile.from_dict(doc)
+                        self._profiles_cache[cid] = p
+                        tree = doc.get("facial_consistency_tree", {})
+                        if tree and tree.get("consensus_embedding"):
+                            self._embeddings_cache[cid] = np.array(tree["consensus_embedding"], dtype=np.float32)
+            except Exception as e:
+                logger.debug(f"Database sync in reload_profiles: {e}")
 
     def ensure_default_multi_views(self) -> None:
         """
@@ -1476,6 +1504,8 @@ class CharacterStudio:
         image_left: Optional[Union[str, np.ndarray, Image.Image]] = None,
         image_right: Optional[Union[str, np.ndarray, Image.Image]] = None,
         image_back: Optional[Union[str, np.ndarray, Image.Image]] = None,
+        default_prompt_prefix: Optional[str] = None,
+        **kwargs: Any,
     ) -> CharacterProfile:
         """
         Enrolls a new character from 1 to 5 portrait images or multi-angle 3/4-side views:
@@ -1490,6 +1520,9 @@ class CharacterStudio:
         """
         if not name or not name.strip():
             raise ValueError("Character name cannot be empty.")
+
+        effective_prompt_prefix = (default_prompt_prefix or prompt_prefix or "").strip()
+        slug = sanitize_character_slug(character_id or name)
 
         # Consolidate explicit views
         effective_views: Dict[str, Union[str, np.ndarray, Image.Image]] = {}
@@ -1510,19 +1543,25 @@ class CharacterStudio:
         is_list_mode = False
         # Check if list of images provided instead
         if not effective_views:
-            if not images or len(images) == 0:
+            if images is not None and len(images) == 0:
                 raise ValueError("At least 1 portrait image must be provided for character enrollment.")
-            if len(images) > 5:
-                logger.warning(f"More than 5 images provided ({len(images)}). Using top 5 images.")
-                images = images[:5]
+            if images is None:
+                # Procedural avatar fallback for seamless zero-file enrollment
+                is_female = gender.lower() in ("female", "woman", "girl")
+                proc_img = render_procedural_character_view(slug, "front", is_female=is_female)
+                effective_views["front"] = proc_img
+            else:
+                if len(images) > 5:
+                    logger.warning(f"More than 5 images provided ({len(images)}). Using top 5 images.")
+                    images = images[:5]
 
-            is_list_mode = True
-            view_order = ["front", "left", "right", "back", "extra"]
-            if len(images) == 4:
-                view_order = ["front", "left", "back", "right"]
-            for idx, img_input in enumerate(images):
-                v_name = view_order[idx] if idx < len(view_order) else f"view_{idx}"
-                effective_views[v_name] = img_input
+                is_list_mode = True
+                view_order = ["front", "left", "right", "back", "extra"]
+                if len(images) == 4:
+                    view_order = ["front", "left", "back", "right"]
+                for idx, img_input in enumerate(images):
+                    v_name = view_order[idx] if idx < len(view_order) else f"view_{idx}"
+                    effective_views[v_name] = img_input
 
         # 1. Resolve ID / slug
         slug = sanitize_character_slug(character_id or name)
@@ -1598,13 +1637,13 @@ class CharacterStudio:
             logger.warning(f"Gemini character analysis encountered an issue during enrollment: {e}")
 
         # 6. Default prompt prefix generation if not specified
-        if not prompt_prefix:
+        if not effective_prompt_prefix:
             if gemini_analysis and gemini_analysis.get("prompt_prefix"):
-                prompt_prefix = gemini_analysis["prompt_prefix"]
+                effective_prompt_prefix = gemini_analysis["prompt_prefix"]
             else:
                 gender_desc = f"{gender} " if gender and gender.lower() != "neutral" else ""
                 age_desc = f"{age}-year-old " if age else ""
-                prompt_prefix = f"cinematic portrait of {name}, a {age_desc}{gender_desc}with distinct natural facial features"
+                effective_prompt_prefix = f"cinematic portrait of {name.strip()}, an expressive {age_desc}{gender_desc}character with consistent facial structure"
 
         if not negative_prompt:
             base_neg = "blurry, cartoon, 3d render, distorted face, extra limbs, bad eyes, low resolution"
@@ -1613,13 +1652,27 @@ class CharacterStudio:
 
         created_at_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-        # 7. Construct CharacterProfile dataclass
+        # 7. Construct Facial Consistency JSON Tree
+        consistency_tree = None
+        if hasattr(self, "db") and self.db is not None:
+            try:
+                consistency_tree = self.db.build_facial_consistency_tree(
+                    character_id=slug,
+                    name=name.strip(),
+                    embedding=consensus_embedding,
+                    views=saved_views_map,
+                    traits=gemini_analysis if gemini_analysis else None,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to generate facial consistency tree: {e}")
+
+        # 8. Construct CharacterProfile dataclass
         profile = CharacterProfile(
             id=slug,
             name=name.strip(),
             description=description.strip(),
             gender=gender.strip(),
-            prompt_prefix=prompt_prefix.strip(),
+            prompt_prefix=effective_prompt_prefix.strip(),
             negative_prompt=negative_prompt.strip(),
             embedding_path=emb_filename,
             reference_images=saved_image_names,
@@ -1628,14 +1681,22 @@ class CharacterStudio:
             age=age,
             tags=tags or ["custom"],
             gemini_traits=gemini_analysis if gemini_analysis else None,
+            facial_consistency_tree=consistency_tree,
         )
 
-        # 8. Write profile.json
+        # 9. Write profile.json & sync with database
+        profile_dict = profile.to_dict()
         profile_json_path = os.path.join(char_dir, "profile.json")
         with open(profile_json_path, "w", encoding="utf-8") as f:
-            json.dump(profile.to_dict(), f, indent=2)
+            json.dump(profile_dict, f, indent=2)
 
-        # 9. Update in-memory caches
+        if hasattr(self, "db") and self.db is not None:
+            try:
+                self.db.save_character(profile_dict)
+            except Exception as e:
+                logger.warning(f"Failed to save character to database: {e}")
+
+        # 10. Update in-memory caches
         self._profiles_cache[slug] = profile
         self._embeddings_cache[slug] = consensus_embedding
 
@@ -1644,6 +1705,52 @@ class CharacterStudio:
             f"Consensus L2 Norm: {np.linalg.norm(consensus_embedding):.6f}"
         )
         return profile
+
+    def reinforce_character_facial_consistency(
+        self,
+        character_id: str,
+        frame_embedding: Optional[Union[np.ndarray, List[float]]] = None,
+        prompt: str = "",
+        shot_metadata: Optional[Dict[str, Any]] = None,
+        keyframe_image_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Reinforces a character's facial consistency tree after video generation:
+        - Fuses generated facial features into consensus embedding via EMA
+        - Increases identity fidelity / confidence score
+        - Updates anchor keyframe poses (Grit, Action, Dialogue, Noir)
+        - Persists to MongoDB & local JSON document store
+        """
+        if not hasattr(self, "db") or self.db is None:
+            self.db = get_character_database()
+
+        tree = self.db.reinforce_character_facial_consistency(
+            character_id=character_id,
+            frame_embedding=frame_embedding,
+            prompt=prompt,
+            shot_metadata=shot_metadata,
+            keyframe_image_path=keyframe_image_path,
+        )
+
+        # Synchronize local memory cache
+        if character_id in self._profiles_cache:
+            self._profiles_cache[character_id].facial_consistency_tree = tree
+            emb = tree.get("consensus_embedding")
+            if emb:
+                self._embeddings_cache[character_id] = np.array(emb, dtype=np.float32)
+
+        return tree
+
+    def get_character_consistency_tree(self, character_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves the full Facial Consistency JSON Tree for a character."""
+        char = self.get_character(character_id)
+        if char and char.facial_consistency_tree:
+            return char.facial_consistency_tree
+        if hasattr(self, "db") and self.db is not None:
+            doc = self.db.get_character(character_id)
+            if doc:
+                return doc.get("facial_consistency_tree")
+        return None
 
     # -------------------------------------------------------------------------
     # Character Frame Generation (Stage 1 Pipeline)
@@ -1820,7 +1927,7 @@ class CharacterStudio:
         # Hair (styled based on character gender/name)
         hair_color = (25, 20, 18, 255)
         char_gender = (character.gender if character else "neutral").lower()
-        if "female" in char_gender or "meghla" in str(character_id).lower():
+        if "female" in char_gender or "woman" in char_gender or "girl" in char_gender:
             # Long wavy hair
             draw.ellipse([cx - int(head_w * 0.65), cy - int(head_h * 0.6), cx + int(head_w * 0.65), cy + int(head_h * 0.5)], fill=hair_color)
             # Re-draw face over hair

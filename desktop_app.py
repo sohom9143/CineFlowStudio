@@ -50,7 +50,7 @@ os.chdir(APP_DIR)
 
 import webview
 import webbrowser
-from app import CineFlowApp, build_gradio_ui
+from app import CineFlowApp, build_gradio_ui, build_fastapi_app, FASTAPI_AVAILABLE
 
 COLAB_NOTEBOOK_URL = "https://colab.research.google.com/github/sohom9143/CineFlowStudio/blob/main/CineFlow_Colab_FreeTier.ipynb"
 
@@ -111,17 +111,25 @@ def start_gradio_server(port: int, config_path: str = "configs/colab_t4_config.y
 
         logger.info(f"Initializing CineFlow-AI Studio backend with '{resolved_config}'...")
         app = CineFlowApp(config_path=resolved_config)
-        demo = build_gradio_ui(app)
-        logger.info(f"Starting local server at http://127.0.0.1:{port} ...")
-        demo.launch(
-            server_name="127.0.0.1",
-            server_port=port,
-            share=False,
-            inbrowser=False,
-            prevent_thread_lock=True,
-            show_error=True,
-            quiet=True,
-        )
+        if FASTAPI_AVAILABLE:
+            import uvicorn
+            fastapi_app = build_fastapi_app(app)
+            logger.info(f"Starting local Studio server at http://127.0.0.1:{port} ...")
+            config = uvicorn.Config(fastapi_app, host="127.0.0.1", port=port, log_level="warning")
+            server = uvicorn.Server(config)
+            server.run()
+        else:
+            demo = build_gradio_ui(app)
+            logger.info(f"Starting local server at http://127.0.0.1:{port} ...")
+            demo.launch(
+                server_name="127.0.0.1",
+                server_port=port,
+                share=False,
+                inbrowser=False,
+                prevent_thread_lock=True,
+                show_error=True,
+                quiet=True,
+            )
     except Exception as e:
         logger.error(f"Error starting Gradio server: {e}", exc_info=True)
 

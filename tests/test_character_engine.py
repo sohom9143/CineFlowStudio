@@ -316,46 +316,52 @@ class TestCharacterStudioPreconfigured:
         assert style_by_name is not None
         assert style_by_name["id"] in ("cyberpunk_noir", "scifi_cyberpunk")
 
-    def test_preconfigured_face_bank_profiles(self, default_studio):
-        characters = default_studio.list_characters()
-        assert len(characters) >= 4
+    def test_user_based_clean_state(self, default_studio):
+        """Verifies CineFlow has purged legacy prebuilt characters."""
+        char_ids = [c.id for c in default_studio.list_characters()]
+        assert "dev" not in char_ids
+        assert "neel" not in char_ids
+        assert "meghla" not in char_ids
+        assert "cha_kaku" not in char_ids
 
-        char_ids = [c.id for c in characters]
-        expected_chars = ["dev", "neel", "meghla", "cha_kaku"]
-        for exp in expected_chars:
-            assert exp in char_ids
+    def test_user_character_enrollment_and_tree(self, default_studio):
+        """Tests dynamic user-based enrollment and automatic facial consistency tree generation."""
+        kira = default_studio.enroll_character(
+            name="Kira Thorne",
+            description="Cyberpunk courier with neon cyan hair and amber eyes",
+            gender="female",
+            tags=["cyberpunk", "protagonist"],
+            default_prompt_prefix="cinematic portrait of Kira Thorne",
+        )
+        try:
+            assert kira is not None
+            assert kira.id == "kira_thorne"
+            assert kira.name == "Kira Thorne"
+            assert kira.gender == "female"
 
-    def test_character_profile_details(self, default_studio):
-        dev = default_studio.get_character("dev")
-        assert dev is not None
-        assert dev.name == "Dev"
-        assert dev.gender == "male"
-        assert dev.age == 28
-        assert "indie filmmaker" in dev.description
-        assert "Dev" in dev.prompt_prefix
-
-        neel = default_studio.get_character("neel")
-        assert neel is not None
-        assert neel.name == "Neel"
-        assert "glasses" in neel.prompt_prefix
-
-        meghla = default_studio.get_character("meghla")
-        assert meghla is not None
-        assert meghla.name == "Meghla"
-        assert meghla.gender == "female"
-
-        cha_kaku = default_studio.get_character("cha_kaku")
-        assert cha_kaku is not None
-        assert cha_kaku.name == "Cha Kaku"
-        assert cha_kaku.age == 58
-
-    def test_character_embedding_vectors(self, default_studio):
-        for char_id in ["dev", "neel", "meghla", "cha_kaku"]:
-            emb = default_studio.get_character_embedding(char_id)
-            assert emb is not None, f"Embedding for {char_id} should not be None"
+            # Check 512-D normalized consensus embedding
+            emb = default_studio.get_character_embedding("kira_thorne")
+            assert emb is not None
             assert emb.shape == (512,)
-            assert emb.dtype == np.float32
             assert np.isclose(compute_l2_norm(emb), 1.0, atol=1e-5)
+
+            # Check facial consistency JSON tree
+            tree = kira.facial_consistency_tree
+            assert tree is not None
+            assert "consensus_embedding" in tree
+            assert len(tree["consensus_embedding"]) == 512
+            assert "keyframe_anchors" in tree
+            assert "grit" in tree["keyframe_anchors"]
+            assert "action" in tree["keyframe_anchors"]
+            assert "dialogue" in tree["keyframe_anchors"]
+            assert "noir" in tree["keyframe_anchors"]
+            assert tree["identity_confidence"] >= 0.85
+            assert "wardrobe_lock" in tree
+            assert "lighting_blend" in tree
+            assert "voice_profile" in tree
+        finally:
+            default_studio.db.delete_character("kira_thorne")
+            default_studio.reload_profiles()
 
 
 # =============================================================================
@@ -364,34 +370,43 @@ class TestCharacterStudioPreconfigured:
 
 class TestPromptSynthesis:
     def test_prompt_synthesis_full_hierarchy(self, default_studio):
-        pos_prompt, neg_prompt = default_studio.synthesize_prompt(
-            character_id="dev",
-            scene_prompt="standing on Howrah bridge under rain",
-            style_id="kolkata_vintage",
-            custom_modifiers="dramatic lighting, cinematic composition",
+        test_char = default_studio.enroll_character(
+            name="Alex",
+            description="Cinematic test protagonist",
+            gender="neutral",
+            default_prompt_prefix="cinematic portrait of Alex",
         )
+        try:
+            pos_prompt, neg_prompt = default_studio.synthesize_prompt(
+                character_id=test_char.id,
+                scene_prompt="standing on Howrah bridge under rain",
+                style_id="kolkata_vintage",
+                custom_modifiers="dramatic lighting, cinematic composition",
+            )
 
-        # Style prefix should appear first
-        assert pos_prompt.startswith("Kodak Portra 400 35mm")
-        # Character prefix included
-        assert "cinematic portrait of Dev" in pos_prompt
-        # Scene prompt included
-        assert "standing on Howrah bridge under rain" in pos_prompt
-        # Custom modifiers included
-        assert "dramatic lighting, cinematic composition" in pos_prompt
-        # Style suffix included at end
-        assert pos_prompt.endswith("Satyajit Ray cinematic framing")
+            # Style prefix should appear first
+            assert pos_prompt.startswith("Kodak Portra 400 35mm")
+            # Character prefix included
+            assert "cinematic portrait of Alex" in pos_prompt
+            # Scene prompt included
+            assert "standing on Howrah bridge under rain" in pos_prompt
+            assert "dramatic lighting, cinematic composition" in pos_prompt
+            # Style suffix included at end
+            assert pos_prompt.endswith("Satyajit Ray cinematic framing")
 
-        # Negative prompt should merge character and style negatives
-        assert "blurry" in neg_prompt
-        assert "digital" in neg_prompt
-        # Check no consecutive double commas
-        assert ", ," not in pos_prompt
-        assert ", ," not in neg_prompt
+            # Negative prompt should merge character and style negatives
+            assert "blurry" in neg_prompt
+            assert "digital" in neg_prompt
+            # Check no consecutive double commas
+            assert ", ," not in pos_prompt
+            assert ", ," not in neg_prompt
+        finally:
+            default_studio.db.delete_character(test_char.id)
+            default_studio.reload_profiles()
 
     def test_prompt_synthesis_negative_prompt_deduplication(self, default_studio):
         pos, neg = default_studio.synthesize_prompt(
-            character_id="dev",
+            character_id=None,
             scene_prompt="walking in alley",
             style_id="imax_realism",
         )
