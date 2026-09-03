@@ -1152,7 +1152,7 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                         char_dropdown = gr.Dropdown(
                             label="🎭 Actor / Character Identity",
                             choices=app_instance.get_character_names(),
-                            value=app_instance.get_character_names()[0] if app_instance.get_character_names() else "Dev (dev)",
+                            value=app_instance.get_character_names()[0] if app_instance.get_character_names() else None,
                             scale=4,
                         )
                         refresh_chars_btn = gr.Button("🔄", size="sm", scale=1)
@@ -1745,10 +1745,41 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
     if not FASTAPI_AVAILABLE:
         raise RuntimeError("FastAPI or uvicorn is not installed.")
 
-    workspace_dir = os.path.dirname(os.path.abspath(__file__))
-    static_dir = os.path.join(workspace_dir, "static")
-    outputs_dir = os.path.join(workspace_dir, "outputs")
-    profiles_dir = os.path.join(workspace_dir, "character_profiles")
+    candidates = []
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        candidates.append(Path(sys._MEIPASS))
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).parent)
+    candidates.append(Path(os.path.dirname(os.path.abspath(__file__))))
+    candidates.append(Path(os.getcwd()))
+
+    # Find static directory containing index.html
+    static_dir = None
+    for cand in candidates:
+        cand_static = cand / "static"
+        if cand_static.exists() and (cand_static / "index.html").exists():
+            static_dir = str(cand_static)
+            break
+    if not static_dir:
+        for cand in candidates:
+            cand_static = cand / "static"
+            if cand_static.exists():
+                static_dir = str(cand_static)
+                break
+    if not static_dir:
+        static_dir = str(candidates[0] / "static")
+
+    # Find workspace dir for code.html
+    workspace_dir = str(candidates[0])
+    for cand in candidates:
+        if (cand / "code.html").exists():
+            workspace_dir = str(cand)
+            break
+
+    # Runtime user output dirs live in app executable folder or cwd
+    app_root = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(os.getcwd())
+    outputs_dir = str(app_root / "outputs")
+    profiles_dir = str(app_root / "character_profiles")
 
     os.makedirs(static_dir, exist_ok=True)
     os.makedirs(outputs_dir, exist_ok=True)
@@ -1784,6 +1815,61 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
         if os.path.exists(code_file):
             return FileResponse(code_file)
         return FileResponse(os.path.join(static_dir, "index.html"))
+
+    @app.get("/connect")
+    @app.get("/connect.html")
+    def serve_connect():
+        conn_file = os.path.join(static_dir, "connect.html")
+        if os.path.exists(conn_file):
+            return FileResponse(conn_file)
+        return FileResponse(os.path.join(static_dir, "index.html"))
+
+    @app.get("/api/health")
+    def health_check():
+        vram = app_instance.memory_manager.get_vram_stats()
+        device_name = "Nvidia Tesla T4" if app_instance.memory_manager.is_cuda else "CPU / Local"
+        if app_instance.memory_manager.is_cuda:
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    device_name = torch.cuda.get_device_name(0)
+            except Exception:
+                pass
+        return JSONResponse({
+            "status": "healthy",
+            "service": "CineFlow-AI Studio",
+            "device": device_name,
+            "is_cuda": app_instance.memory_manager.is_cuda,
+            "allocated_gb": vram.get("allocated_gb", 0),
+            "total_gb": vram.get("total_gb", 0),
+            "free_gb": vram.get("free_gb", 0),
+        })
+
+    @app.post("/api/connection")
+    async def set_connection(req: Request):
+        try:
+            body = await req.json()
+            colab_url = body.get("colab_url", "").strip().rstrip("/")
+            conn_config_path = os.path.join(workspace_dir, "configs", "colab_connection.json")
+            os.makedirs(os.path.dirname(conn_config_path), exist_ok=True)
+            import json
+            with open(conn_config_path, "w", encoding="utf-8") as f:
+                json.dump({"colab_url": colab_url, "updated_at": time.time()}, f, indent=2)
+            return JSONResponse({"status": "success", "colab_url": colab_url})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/api/connection")
+    def get_connection():
+        conn_config_path = os.path.join(workspace_dir, "configs", "colab_connection.json")
+        if os.path.exists(conn_config_path):
+            try:
+                import json
+                with open(conn_config_path, "r", encoding="utf-8") as f:
+                    return JSONResponse(json.load(f))
+            except Exception:
+                pass
+        return JSONResponse({"colab_url": ""})
 
     @app.get("/api/characters")
     def list_characters():

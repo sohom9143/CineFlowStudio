@@ -9,16 +9,22 @@ def main():
     else:
         app_dir = Path(__file__).resolve().parent
 
-    bat_file = app_dir / 'run_app.bat'
+    compiled_exe = app_dir / "dist" / "CineFlow-AI-Studio" / "CineFlow-AI-Studio.exe"
+    bat_file = app_dir / "run_app.bat"
+    py_app = app_dir / "desktop_app.py"
 
-    print('=' * 65)
-    print('  CineFlow-AI Studio: Launching Live Backend via run_app.bat...')
-    print('=' * 65)
+    print("=" * 65)
+    print("  🎬 CineFlow-AI Studio: Launching Cinematic Desktop Application...")
+    print("=" * 65)
 
-    if bat_file.exists():
-        subprocess.run(['cmd.exe', '/c', str(bat_file)], cwd=str(app_dir))
-    else:
-        py_app = app_dir / 'desktop_app.py'
+    if compiled_exe.exists():
+        print(f"  Starting compiled studio: {compiled_exe}")
+        subprocess.run([str(compiled_exe)], cwd=str(compiled_exe.parent))
+    elif bat_file.exists():
+        print(f"  Starting via run_app.bat...")
+        subprocess.run(["cmd.exe", "/c", str(bat_file)], cwd=str(app_dir))
+    elif py_app.exists():
+        print(f"  Starting via python desktop_app.py...")
         subprocess.run([sys.executable, str(py_app)], cwd=str(app_dir))
 
 if __name__ == '__main__':

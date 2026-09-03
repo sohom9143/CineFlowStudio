@@ -60,3 +60,7 @@ Thumbs.db
 # User-Enrolled Characters (Preserve .gitkeep only)
 character_profiles/*/
 !character_profiles/.gitkeep
+
+# Runtime Tunnel Config
+configs/colab_connection.json
+

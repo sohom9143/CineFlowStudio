@@ -99,6 +99,52 @@ def open_colab_notebook() -> None:
         logger.warning(f"Could not open Google Colab in browser automatically: {e}")
 
 
+def get_saved_colab_url() -> Optional[str]:
+    """Reads saved Colab URL from environment or configs/colab_connection.json."""
+    env_url = os.getenv("CINEFLOW_COLAB_URL", "").strip()
+    if env_url:
+        return env_url.rstrip("/")
+
+    candidates = [
+        APP_DIR / "configs" / "colab_connection.json",
+        BASE_DIR / "configs" / "colab_connection.json",
+        Path(os.getcwd()) / "configs" / "colab_connection.json",
+    ]
+    for p in candidates:
+        if p.exists():
+            try:
+                import json
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    url = data.get("colab_url", "").strip()
+                    if url:
+                        return url.rstrip("/")
+            except Exception:
+                pass
+    return None
+
+
+def verify_colab_url(url: str, timeout: float = 3.5) -> bool:
+    """Checks if remote Colab endpoint is reachable and healthy."""
+    if not url:
+        return False
+    health_url = f"{url.rstrip('/')}/api/health"
+    try:
+        req = urllib.request.Request(health_url, headers={"User-Agent": "CineFlow-Desktop"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                return True
+    except Exception:
+        try:
+            req = urllib.request.Request(url.rstrip("/"), headers={"User-Agent": "CineFlow-Desktop"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status in (200, 302, 307):
+                    return True
+        except Exception:
+            return False
+    return False
+
+
 def start_gradio_server(port: int, config_path: str = "configs/colab_t4_config.yaml") -> None:
     """Initializes and starts the Gradio backend in a daemon thread."""
     try:
@@ -135,9 +181,9 @@ def start_gradio_server(port: int, config_path: str = "configs/colab_t4_config.y
 
 
 def main() -> None:
-    """Main launcher for Desktop Application."""
+    """Main launcher for Desktop Application with Colab Cloud GPU Bridge."""
     port = find_free_port(7860)
-    server_url = f"http://127.0.0.1:{port}"
+    local_server_url = f"http://127.0.0.1:{port}"
 
     config_file = "configs/colab_t4_config.yaml"
     if not os.path.exists(config_file):
@@ -145,13 +191,7 @@ def main() -> None:
         if configs:
             config_file = str(configs[0])
 
-    # Auto-open Google Colab in browser when launching the desktop app
-    auto_colab = os.getenv("CINEFLOW_AUTO_OPEN_COLAB", "1").strip().lower() not in ("0", "false", "no")
-    if auto_colab:
-        colab_thread = threading.Thread(target=open_colab_notebook, daemon=True)
-        colab_thread.start()
-
-    # Start Gradio in a background thread
+    # 1. Start local backend in background thread (handles connection portal and offline fallback)
     server_thread = threading.Thread(
         target=start_gradio_server,
         args=(port, config_file),
@@ -159,22 +199,45 @@ def main() -> None:
     )
     server_thread.start()
 
-    logger.info("Waiting for CineFlow-AI interface to be ready...")
-    if not wait_for_server(server_url, timeout=30.0):
-        logger.warning("Server took longer than expected to respond, opening window anyway...")
+    logger.info("Waiting for CineFlow-AI local server to initialize...")
+    wait_for_server(local_server_url, timeout=20.0)
 
-    logger.info("Opening CineFlow-AI Studio Desktop Window...")
-    
+    # 2. Check for previously saved or configured Colab Cloud GPU URL
+    saved_url = get_saved_colab_url()
+    target_url = f"{local_server_url}/connect"
+    window_title = "🎬 CineFlow-AI Studio - Cloud GPU Bridge"
+
+    if saved_url:
+        logger.info(f"Checking saved Colab URL: {saved_url} ...")
+        if verify_colab_url(saved_url, timeout=3.0):
+            logger.info(f"✅ Verified Colab Cloud GPU backend online at {saved_url}!")
+            target_url = saved_url
+            window_title = "🎬 CineFlow-AI Studio [Cloud GPU Active - Colab T4]"
+        else:
+            logger.info(f"Saved Colab session ({saved_url}) is inactive. Loading Connection Portal...")
+            target_url = f"{local_server_url}/connect"
+    else:
+        logger.info("No active Colab URL found. Loading Cloud GPU Connection Portal...")
+        target_url = f"{local_server_url}/connect"
+
+    # Auto-open Google Colab in browser when starting in portal mode
+    auto_colab = os.getenv("CINEFLOW_AUTO_OPEN_COLAB", "1").strip().lower() not in ("0", "false", "no")
+    if auto_colab and target_url == f"{local_server_url}/connect":
+        colab_thread = threading.Thread(target=open_colab_notebook, daemon=True)
+        colab_thread.start()
+
+    logger.info(f"Opening CineFlow-AI Studio Desktop Window at: {target_url}")
+
     # Create native desktop window using pywebview
     window = webview.create_window(
-        title="🎬 CineFlow-AI Studio - Cinematic AI Video Suite",
-        url=server_url,
+        title=window_title,
+        url=target_url,
         width=1360,
         height=880,
         resizable=True,
         min_size=(960, 640),
         confirm_close=False,
-        background_color="#111827",
+        background_color="#0f131c",
     )
 
     # Start the desktop window event loop
@@ -184,4 +247,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 

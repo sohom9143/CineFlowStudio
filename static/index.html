@@ -179,6 +179,10 @@
               <span class="w-1.5 h-1.5 rounded-full bg-secondary shadow-[0_0_8px_#4cd7f6] animate-pulse"></span>
               <span class="font-label-caps text-label-caps uppercase text-secondary font-semibold" id="telemetry-agents">3 Agents Active</span>
             </div>
+            <button onclick="openColabBridgeModal()" class="flex items-center gap-space-xs px-space-sm py-space-2xs rounded-full bg-surface-container-high/80 hover:bg-surface-container-highest border border-secondary/30 transition-all cursor-pointer" title="Colab Cloud GPU Bridge Settings">
+              <span class="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399] animate-pulse" id="cloud-bridge-indicator"></span>
+              <span class="font-label-caps text-label-caps uppercase text-secondary font-semibold" id="cloud-bridge-text">Colab T4 Bridge</span>
+            </button>
             <div class="flex items-center gap-space-xs px-space-sm py-space-2xs rounded-full bg-surface-container-high/80 backdrop-blur-md">
               <span class="w-1.5 h-1.5 rounded-full bg-primary shadow-[0_0_8px_#d0bcff]"></span>
               <span class="font-label-caps text-label-caps uppercase text-on-surface-variant" id="telemetry-gpu">GPU: Nvidia T4 (15.3 GB VRAM)</span>
@@ -1372,6 +1376,102 @@
         }
       } catch (e) {}
     }
+
+    // -------------------------------------------------------------------------
+    // Colab Cloud GPU Bridge Modal Handlers
+    // -------------------------------------------------------------------------
+    function openColabBridgeModal() {
+      const saved = localStorage.getItem("cineflow_colab_url") || "";
+      const input = document.getElementById("modal-colab-url");
+      if (input) input.value = saved;
+      const modal = document.getElementById("colab-bridge-modal");
+      if (modal) modal.classList.remove("hidden");
+    }
+
+    function closeColabBridgeModal() {
+      const modal = document.getElementById("colab-bridge-modal");
+      if (modal) modal.classList.add("hidden");
+    }
+
+    async function saveAndConnectColabModal() {
+      const input = document.getElementById("modal-colab-url");
+      let url = input ? input.value.trim().replace(/\/+$/, "") : "";
+      if (!url) {
+        showToast("Please enter a valid Colab URL from Cell 6", "warning");
+        return;
+      }
+      if (!url.startsWith("http://") && !url.startsWith("https://")) {
+        url = "https://" + url;
+      }
+      showToast("Testing Colab GPU connectivity...", "sync");
+      try {
+        const res = await fetch(`${url}/api/health`, { headers: { "Accept": "application/json" } });
+        if (res.ok) {
+          localStorage.setItem("cineflow_colab_url", url);
+          try {
+            await fetch("/api/connection", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ colab_url: url })
+            });
+          } catch (e) {}
+          showToast("Connected to Colab T4 GPU! Reloading studio...", "check_circle");
+          setTimeout(() => { window.location.href = url; }, 500);
+        } else {
+          showToast("Colab returned error status. Check Cell 6.", "error");
+        }
+      } catch (err) {
+        showToast("Could not reach Colab: " + err.message, "error");
+      }
+    }
+
+    // Update status badge based on current environment
+    window.addEventListener("DOMContentLoaded", () => {
+      const ind = document.getElementById("cloud-bridge-indicator");
+      const txt = document.getElementById("cloud-bridge-text");
+      if (ind && txt) {
+        if (window.location.hostname.includes("trycloudflare.com") || (!window.location.hostname.includes("127.0.0.1") && !window.location.hostname.includes("localhost"))) {
+          ind.className = "w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399] animate-pulse";
+          txt.innerText = "Colab T4 Active";
+        } else {
+          ind.className = "w-2 h-2 rounded-full bg-yellow-400 shadow-[0_0_8px_#facc15]";
+          txt.innerText = "Local Mode";
+        }
+      }
+    });
   </script>
+
+  <!-- COLAB CLOUD GPU BRIDGE MODAL -->
+  <div id="colab-bridge-modal" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-md hidden flex items-center justify-center p-4">
+    <div class="bg-surface-container border border-outline-variant/30 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between pb-3 border-b border-outline-variant/20">
+        <div class="flex items-center gap-2">
+          <span class="material-symbols-outlined text-secondary">bolt</span>
+          <h3 class="font-title text-base font-bold text-white">Colab Cloud GPU Bridge</h3>
+        </div>
+        <button onclick="closeColabBridgeModal()" class="text-outline-variant hover:text-white cursor-pointer">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
+
+      <p class="text-xs text-gray-300">
+        Link this studio directly to your Google Colab Free Tier runtime with Tesla T4 GPU acceleration.
+      </p>
+
+      <div>
+        <label class="block text-xs font-mono text-outline-variant mb-1">Colab Public URL (From Cell 6)</label>
+        <input id="modal-colab-url" type="url" placeholder="https://random-words.trycloudflare.com" class="w-full bg-surface-container-highest rounded-xl px-3 py-2 text-xs font-mono text-white border border-outline-variant/40 focus:border-secondary focus:outline-none"/>
+      </div>
+
+      <div class="flex gap-2 pt-2">
+        <button onclick="saveAndConnectColabModal()" class="flex-1 bg-gradient-to-r from-primary-container to-secondary text-black font-semibold text-xs py-2.5 rounded-xl hover:brightness-110 transition-all cursor-pointer">
+          Connect &amp; Reload
+        </button>
+        <button onclick="window.location.href='/connect'" class="px-3 bg-surface-container-highest text-gray-300 hover:text-white font-mono text-xs py-2.5 rounded-xl transition-all cursor-pointer">
+          Full Portal
+        </button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>
