@@ -1307,7 +1307,7 @@
     "views": {
       "front": "ref_primary.png"
     },
-    "created_at": "2026-09-09T08:03:51Z",
+    "created_at": "2026-09-09T09:57:37Z",
     "age": 30,
     "tags": [
       "actor",
@@ -1333,8 +1333,8 @@
     "facial_consistency_tree": {
       "version": "2.0",
       "character_id": "ayan_banerjee",
-      "created_at": "2026-09-09T08:03:51.534544+00:00",
-      "last_reinforced_at": "2026-09-09T08:03:51.534544+00:00",
+      "created_at": "2026-09-09T09:57:37.579179+00:00",
+      "last_reinforced_at": "2026-09-09T09:57:37.579179+00:00",
       "identity_confidence": 0.88,
       "generation_reinforcement_count": 0,
       "consensus_embedding": [
@@ -1925,7 +1925,7 @@
       "reinforcement_history": [
         {
           "event": "enrolled",
-          "timestamp": "2026-09-09T08:03:51.534544+00:00",
+          "timestamp": "2026-09-09T09:57:37.579179+00:00",
           "confidence": 0.88,
           "note": "Initial enrollment from multi-angle portraits."
         }
@@ -1936,7 +1936,7 @@
     "multi_view_images": {
       "front": "ref_primary.png"
     },
-    "updated_at": "2026-09-09T08:03:51.539979+00:00"
+    "updated_at": "2026-09-09T09:57:37.581369+00:00"
   },
   "rupa_sen": {
     "id": "rupa_sen",
@@ -1956,7 +1956,7 @@
       "left": "ref_1.png",
       "right": "ref_2.png"
     },
-    "created_at": "2026-09-09T08:03:52Z",
+    "created_at": "2026-09-09T09:57:38Z",
     "age": 29,
     "tags": [
       "custom"
@@ -1981,8 +1981,8 @@
     "facial_consistency_tree": {
       "version": "2.0",
       "character_id": "rupa_sen",
-      "created_at": "2026-09-09T08:03:52.335261+00:00",
-      "last_reinforced_at": "2026-09-09T08:03:52.335261+00:00",
+      "created_at": "2026-09-09T09:57:38.226577+00:00",
+      "last_reinforced_at": "2026-09-09T09:57:38.226577+00:00",
       "identity_confidence": 0.88,
       "generation_reinforcement_count": 0,
       "consensus_embedding": [
@@ -2573,7 +2573,7 @@
       "reinforcement_history": [
         {
           "event": "enrolled",
-          "timestamp": "2026-09-09T08:03:52.335261+00:00",
+          "timestamp": "2026-09-09T09:57:38.226577+00:00",
           "confidence": 0.88,
           "note": "Initial enrollment from multi-angle portraits."
         }
@@ -2586,7 +2586,7 @@
       "left": "ref_1.png",
       "right": "ref_2.png"
     },
-    "updated_at": "2026-09-09T08:03:52.338283+00:00"
+    "updated_at": "2026-09-09T09:57:38.229264+00:00"
   },
   "max_images_char": {
     "id": "max_images_char",
@@ -2610,7 +2610,7 @@
       "back": "ref_3.png",
       "extra": "ref_4.png"
     },
-    "created_at": "2026-09-09T08:04:11Z",
+    "created_at": "2026-09-09T09:57:55Z",
     "age": null,
     "tags": [
       "custom"
@@ -2635,8 +2635,8 @@
     "facial_consistency_tree": {
       "version": "2.0",
       "character_id": "max_images_char",
-      "created_at": "2026-09-09T08:04:11.159606+00:00",
-      "last_reinforced_at": "2026-09-09T08:04:11.159606+00:00",
+      "created_at": "2026-09-09T09:57:55.206443+00:00",
+      "last_reinforced_at": "2026-09-09T09:57:55.206443+00:00",
       "identity_confidence": 0.88,
       "generation_reinforcement_count": 0,
       "consensus_embedding": [
@@ -3227,7 +3227,7 @@
       "reinforcement_history": [
         {
           "event": "enrolled",
-          "timestamp": "2026-09-09T08:04:11.159606+00:00",
+          "timestamp": "2026-09-09T09:57:55.206443+00:00",
           "confidence": 0.88,
           "note": "Initial enrollment from multi-angle portraits."
         }
@@ -3242,7 +3242,7 @@
       "back": "ref_3.png",
       "extra": "ref_4.png"
     },
-    "updated_at": "2026-09-09T08:04:11.161462+00:00"
+    "updated_at": "2026-09-09T09:57:55.208589+00:00"
   },
   "satyajit_hero": {
     "id": "satyajit_hero",
@@ -3262,7 +3262,7 @@
       "left": "ref_left.png",
       "right": "ref_right.png"
     },
-    "created_at": "2026-09-09T08:04:17Z",
+    "created_at": "2026-09-09T09:58:02Z",
     "age": null,
     "tags": [
       "custom"
@@ -3287,8 +3287,8 @@
     "facial_consistency_tree": {
       "version": "2.0",
       "character_id": "satyajit_hero",
-      "created_at": "2026-09-09T08:04:17.972147+00:00",
-      "last_reinforced_at": "2026-09-09T08:04:17.972147+00:00",
+      "created_at": "2026-09-09T09:58:02.278546+00:00",
+      "last_reinforced_at": "2026-09-09T09:58:02.278546+00:00",
       "identity_confidence": 0.88,
       "generation_reinforcement_count": 0,
       "consensus_embedding": [
@@ -3879,7 +3879,7 @@
       "reinforcement_history": [
         {
           "event": "enrolled",
-          "timestamp": "2026-09-09T08:04:17.972147+00:00",
+          "timestamp": "2026-09-09T09:58:02.278546+00:00",
           "confidence": 0.88,
           "note": "Initial enrollment from multi-angle portraits."
         }
@@ -3892,7 +3892,7 @@
       "left": "ref_left.png",
       "right": "ref_right.png"
     },
-    "updated_at": "2026-09-09T08:04:17.973971+00:00"
+    "updated_at": "2026-09-09T09:58:02.280311+00:00"
   },
   "ananya_roy": {
     "id": "ananya_roy",
@@ -3914,7 +3914,7 @@
       "right": "ref_right.png",
       "back": "ref_back.png"
     },
-    "created_at": "2026-09-09T08:04:18Z",
+    "created_at": "2026-09-09T09:58:03Z",
     "age": null,
     "tags": [
       "custom"
@@ -3939,8 +3939,8 @@
     "facial_consistency_tree": {
       "version": "2.0",
       "character_id": "ananya_roy",
-      "created_at": "2026-09-09T08:04:18.752518+00:00",
-      "last_reinforced_at": "2026-09-09T08:04:18.752518+00:00",
+      "created_at": "2026-09-09T09:58:03.026820+00:00",
+      "last_reinforced_at": "2026-09-09T09:58:03.026820+00:00",
       "identity_confidence": 0.88,
       "generation_reinforcement_count": 0,
       "consensus_embedding": [
@@ -4531,7 +4531,7 @@
       "reinforcement_history": [
         {
           "event": "enrolled",
-          "timestamp": "2026-09-09T08:04:18.752518+00:00",
+          "timestamp": "2026-09-09T09:58:03.026820+00:00",
           "confidence": 0.88,
           "note": "Initial enrollment from multi-angle portraits."
         }
@@ -4545,7 +4545,7 @@
       "right": "ref_right.png",
       "back": "ref_back.png"
     },
-    "updated_at": "2026-09-09T08:04:18.754334+00:00"
+    "updated_at": "2026-09-09T09:58:03.028684+00:00"
   },
   "vikram": {
     "id": "vikram",

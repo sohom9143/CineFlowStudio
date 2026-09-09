@@ -100,11 +100,22 @@ def open_colab_notebook() -> None:
 
 
 def get_saved_colab_url() -> Optional[str]:
-    """Reads saved Colab URL from environment or configs/colab_connection.json."""
+    """Reads saved Colab URL from environment, Firebase RTDB, or configs/colab_connection.json."""
     env_url = os.getenv("CINEFLOW_COLAB_URL", "").strip()
     if env_url:
         return env_url.rstrip("/")
 
+    # 1. Check Firebase Realtime Database for Zero-Copy Auto-Handshake
+    try:
+        from modules.cloud_storage import get_active_colab_bridge
+        bridge = get_active_colab_bridge()
+        if bridge and bridge.get("url"):
+            logger.info(f"Auto-discovered active Colab GPU URL from Firebase RTDB: {bridge['url']}")
+            return bridge["url"].rstrip("/")
+    except Exception as e:
+        logger.debug(f"Firebase auto-discovery check: {e}")
+
+    # 2. Local config fallback
     candidates = [
         APP_DIR / "configs" / "colab_connection.json",
         BASE_DIR / "configs" / "colab_connection.json",
