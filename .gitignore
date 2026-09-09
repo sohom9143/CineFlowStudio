@@ -35,6 +35,12 @@ wheels/
 .coverage
 htmlcov/
 
+# .NET Build Outputs
+bin/
+obj/
+*.user
+*.suo
+
 # App-specific caches & outputs
 outputs/
 *.mp4

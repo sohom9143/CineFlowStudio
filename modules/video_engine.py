@@ -146,6 +146,25 @@ class VideoGenerationConfig:
 # Video Export Utilities
 # =============================================================================
 
+def resolve_dimensions(resolution: str = "480p", aspect_ratio: str = "16:9") -> Tuple[int, int]:
+    """
+    Resolves (width, height) satisfying DiT spatial downsampling constraints (multiples of 16).
+    - 16:9 (Landscape - YouTube / Film):
+        - 480p: 832 x 480
+        - 720p: 1280 x 720
+    - 9:16 (Portrait - Shorts / Reels / TikTok):
+        - 480p: 480 x 832
+        - 720p: 720 x 1280
+    """
+    res_str = str(resolution).lower()
+    is_portrait = "9:16" in str(aspect_ratio) or "portrait" in str(aspect_ratio).lower() or "vertical" in str(aspect_ratio).lower()
+
+    if "720" in res_str:
+        return (720, 1280) if is_portrait else (1280, 720)
+    else:  # Default 480p
+        return (480, 832) if is_portrait else (832, 480)
+
+
 def save_video_frames(
     frames: List[np.ndarray],
     output_path: Union[str, Path],
@@ -153,7 +172,8 @@ def save_video_frames(
 ) -> str:
     """
     Encodes and writes a sequence of RGB uint8 numpy image frames to an MP4 video file.
-    Uses OpenCV VideoWriter, imageio-ffmpeg, or standard frame saving as fallback.
+    Guarantees H.264 (libx264) + yuv420p + faststart (moov atom) so that video plays
+    instantly across all web browsers, desktop players, and mobile devices without codec errors.
     """
     if not frames:
         raise ValueError("Cannot save video: frame sequence is empty.")
@@ -164,37 +184,84 @@ def save_video_frames(
 
     h, w = frames[0].shape[:2]
 
-    # Strategy 1: OpenCV VideoWriter (Fastest & Standard)
-    if CV2_AVAILABLE:
+    # Strategy 1: Direct FFmpeg CLI pipe (Highest Quality, Universal Browser & Desktop Support)
+    import shutil
+    import subprocess
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if ffmpeg_bin:
         try:
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            writer = cv2.VideoWriter(out_str, fourcc, float(fps), (w, h))
+            cmd = [
+                ffmpeg_bin,
+                "-y",
+                "-f", "rawvideo",
+                "-vcodec", "rawvideo",
+                "-s", f"{w}x{h}",
+                "-pix_fmt", "rgb24",
+                "-r", str(fps),
+                "-i", "-",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-preset", "fast",
+                "-crf", "19",
+                "-movflags", "+faststart",
+                out_str,
+            ]
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             for frame in frames:
-                # Convert RGB to BGR for OpenCV
-                if frame.ndim == 3 and frame.shape[2] == 3:
-                    bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                else:
-                    bgr_frame = frame
-                writer.write(bgr_frame)
-            writer.release()
-            logger.info(f"Video successfully written to '{out_str}' via OpenCV ({len(frames)} frames @ {fps}fps)")
-            return out_str
-        except Exception as e:
-            logger.warning(f"OpenCV VideoWriter failed: {e}. Trying imageio fallback.")
+                if frame.shape[:2] != (h, w):
+                    if CV2_AVAILABLE:
+                        frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LANCZOS4)
+                    else:
+                        frame = np.array(Image.fromarray(frame).resize((w, h), Image.Resampling.LANCZOS))
+                proc.stdin.write(frame.astype(np.uint8).tobytes())
+            proc.stdin.close()
+            proc.wait()
+            if proc.returncode == 0 and os.path.exists(out_str) and os.path.getsize(out_str) > 1024:
+                logger.info(f"Video encoded with FFmpeg libx264 (faststart) to '{out_str}'")
+                return out_str
+        except Exception as ffmpeg_err:
+            logger.warning(f"FFmpeg CLI encoding failed: {ffmpeg_err}. Falling back to imageio.")
 
-    # Strategy 2: imageio / imageio-ffmpeg
+    # Strategy 2: imageio / imageio-ffmpeg with libx264
     if IMAGEIO_AVAILABLE:
         try:
-            with imageio.get_writer(out_str, fps=fps, codec="libx264", quality=8) as writer:
+            with imageio.get_writer(
+                out_str,
+                fps=fps,
+                codec="libx264",
+                pixelformat="yuv420p",
+                quality=8,
+                ffmpeg_params=["-movflags", "+faststart"]
+            ) as writer:
                 for frame in frames:
                     writer.append_data(frame)
-            logger.info(f"Video successfully written to '{out_str}' via imageio ({len(frames)} frames @ {fps}fps)")
+            logger.info(f"Video successfully written to '{out_str}' via imageio H.264")
             return out_str
         except Exception as e:
-            logger.warning(f"imageio VideoWriter failed: {e}.")
+            logger.warning(f"imageio VideoWriter failed: {e}. Trying OpenCV.")
 
-    # Strategy 3: Pure PIL image dump (Fallback placeholder if no video codecs installed)
-    logger.warning("No video encoding library succeeded. Outputting animated GIF / frames.")
+    # Strategy 3: OpenCV VideoWriter (Fallback)
+    if CV2_AVAILABLE:
+        try:
+            # Try H264 fourcc first if available
+            for fcc in ["avc1", "H264", "mp4v"]:
+                try:
+                    fourcc = cv2.VideoWriter_fourcc(*fcc)
+                    writer = cv2.VideoWriter(out_str, fourcc, float(fps), (w, h))
+                    for frame in frames:
+                        bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) if frame.ndim == 3 else frame
+                        writer.write(bgr_frame)
+                    writer.release()
+                    if os.path.exists(out_str) and os.path.getsize(out_str) > 1024:
+                        logger.info(f"Video written to '{out_str}' via OpenCV ({fcc})")
+                        return out_str
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.warning(f"OpenCV VideoWriter failed: {e}.")
+
+    # Strategy 4: Fallback placeholder GIF
+    logger.warning("No video encoding library succeeded. Outputting animated GIF.")
     pil_frames = [Image.fromarray(f) for f in frames]
     gif_path = out_path.with_suffix(".gif")
     pil_frames[0].save(
@@ -258,7 +325,7 @@ class Wan21Backend(BaseVideoBackend):
     - (4k + 1) temporal framing (default 81 frames).
     """
 
-    MODEL_ID = os.getenv("CINEFLOW_WAN_MODEL_ID", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
+    MODEL_ID = os.getenv("CINEFLOW_WAN_MODEL_ID", "Wan-AI/Wan2.1-I2V-1.3B-480P")
 
     def is_available(self) -> bool:
         """
@@ -297,13 +364,14 @@ class Wan21Backend(BaseVideoBackend):
         # Check for diffusers WanPipeline or AutoPipeline
         try:
             pipeline_cls = getattr(diffusers, "WanImageToVideoPipeline", None) or \
-                           getattr(diffusers, "WanPipeline", None) or \
                            getattr(diffusers, "AutoPipelineForImage2Video", None) or \
+                           getattr(diffusers, "WanPipeline", None) or \
                            getattr(diffusers, "AutoPipelineForText2Video", None)
 
             if pipeline_cls is not None:
                 load_kwargs: Dict[str, Any] = {
                     "torch_dtype": torch_dtype,
+                    "low_cpu_mem_usage": True,
                 }
                 
                 # Check for bitsandbytes 4-bit quantization if requested

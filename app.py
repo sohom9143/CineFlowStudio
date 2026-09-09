@@ -58,6 +58,14 @@ from modules.video_engine import (
     CineVideoEngine,
     VideoGenerationConfig,
     save_video_frames,
+    resolve_dimensions,
+)
+from modules.cloud_storage import (
+    register_master_video,
+    publish_colab_bridge,
+)
+from modules.colab_proxy import (
+    get_colab_proxy,
 )
 from modules.lipsync_engine import (
     LipSyncEngine,
@@ -637,15 +645,8 @@ class CineFlowApp:
         else:
             backend_key = "mock"
 
-        base_res_map = {
-            "720x480 (SD 480p - Ultra Low VRAM)": "720x480",
-            "848x480 (Widescreen 480p)": "848x480",
-            "1280x720 (HD 720p - Recommended)": "1280x720",
-            "480p (720x480)": "720x480",
-            "720x480": "720x480",
-        }
-        base_res_norm = base_res_map.get(base_resolution_str, "720x480")
-        base_w, base_h = parse_resolution(base_res_norm)
+        aspect_ratio_norm = kwargs.get("aspect_ratio") or "16:9"
+        base_w, base_h = resolve_dimensions(resolution=base_resolution_str, aspect_ratio=aspect_ratio_norm)
 
         target_res_map = {
             "1080p Full HD (1920x1080)": "1080p",
@@ -758,6 +759,19 @@ class CineFlowApp:
                 output_path=master_output_path,
                 config=post_cfg,
             )
+
+            # Register master video with Cloud Storage (Cloudinary & Firebase RTDB live notify)
+            try:
+                register_master_video(
+                    local_mp4_path=rendered_master_path,
+                    character_id=char_id,
+                    scene_prompt=scene_prompt,
+                    resolution=target_res_norm,
+                    aspect_ratio=aspect_ratio_norm,
+                    fps=final_fps,
+                )
+            except Exception as reg_err:
+                logger.warning(f"Could not register master with cloud storage: {reg_err}")
 
             # Save metadata json alongside master MP4
             meta_json_path = master_output_path.replace(".mp4", "_meta.json")
@@ -1835,6 +1849,18 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
                     device_name = torch.cuda.get_device_name(0)
             except Exception:
                 pass
+        colab_online = False
+        colab_msg = "Not checked"
+        colab_url = ""
+        colab_device = "Tesla T4"
+        try:
+            colab_proxy = get_colab_proxy()
+            colab_online, colab_msg, cdata = colab_proxy.is_colab_online()
+            colab_url = colab_proxy.get_colab_url() or ""
+            colab_device = cdata.get("device", "Tesla T4")
+        except Exception:
+            pass
+
         return JSONResponse({
             "status": "healthy",
             "service": "CineFlow-AI Studio",
@@ -1843,6 +1869,12 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
             "allocated_gb": vram.get("allocated_gb", 0),
             "total_gb": vram.get("total_gb", 0),
             "free_gb": vram.get("free_gb", 0),
+            "colab": {
+                "is_online": colab_online,
+                "status": colab_msg,
+                "url": colab_url,
+                "device": colab_device,
+            }
         })
 
     @app.post("/api/connection")
@@ -1974,11 +2006,23 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
             steps = body.get("steps", 30)
             model = body.get("model", "wan21")
             aspect_ratio = body.get("aspect_ratio", "16:9")
+            resolution = body.get("resolution", "480p")
 
             if not char_id:
                 chars = app_instance.character_studio.list_characters()
                 if chars:
                     char_id = chars[0].id
+
+            # If running locally on CPU (or when Colab is active), forward to Google Colab T4 GPU!
+            if not app_instance.memory_manager.is_cuda:
+                colab_proxy = get_colab_proxy()
+                is_online, _, _ = colab_proxy.is_colab_online()
+                if is_online:
+                    logger.info("⚡ Forwarding generation request from C# app via local Python to Google Colab T4 GPU...")
+                    colab_res = colab_proxy.forward_generation_to_colab(body)
+                    if colab_res.get("status") == "success":
+                        return JSONResponse(colab_res)
+                    logger.warning(f"Colab generation returned error: {colab_res.get('error')}. Cascading to local pipeline.")
 
             master_mp4, _, _, status_md = app_instance.run_master_pipeline(
                 character_dropdown_val=char_id,
@@ -1986,7 +2030,9 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
                 motion_scale=float(motion) / 5.0,
                 guidance_scale=float(cfg),
                 inference_steps=int(steps),
-                target_resolution_str="1080p Full HD (1920x1080)" if aspect_ratio == "16:9" else "720p HD (1280x720)",
+                base_resolution_str=resolution,
+                target_resolution_str="1080p Full HD (1920x1080)" if resolution == "1080p" else ("720p HD (1280x720)" if resolution == "720p" else "720x480 (SD 480p - Ultra Low VRAM)"),
+                aspect_ratio=aspect_ratio,
             )
 
             updated_char = None
@@ -2002,6 +2048,8 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
                 "status": "success",
                 "video_url": video_url,
                 "video_path": master_mp4,
+                "aspect_ratio": aspect_ratio,
+                "resolution": resolution,
                 "character": updated_char,
                 "status_message": status_md,
             })
