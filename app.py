@@ -93,7 +93,7 @@ except ImportError:
 
 # FastAPI & Web Server imports for the 15-Year Designer Studio Interface
 try:
-    from fastapi import FastAPI, Request, UploadFile, File, Form
+    from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
     from fastapi.responses import FileResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
     from fastapi.middleware.cors import CORSMiddleware
@@ -740,9 +740,10 @@ class CineFlowApp:
             master_output_path = os.path.join(self.masters_dir, master_filename)
             final_fps = 60 if rife_raw else 24
 
+            is_passthrough = (target_res_norm == "passthrough")
             post_cfg = PostProcessingConfig(
-                enable_upscale=True,
-                target_resolution=target_res_norm,
+                enable_upscale=not is_passthrough,
+                target_resolution="1080p" if is_passthrough else target_res_norm,
                 chunk_batch_size=4,
                 enable_interpolation=rife_raw,
                 target_fps=final_fps,
@@ -1809,6 +1810,43 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
         allow_headers=["*"],
     )
 
+    @app.get("/character_profiles/{char_id}/{filename:path}")
+    def serve_character_profile_asset(char_id: str, filename: str):
+        char_dir = os.path.join(profiles_dir, char_id)
+        target = os.path.join(char_dir, filename)
+        if os.path.exists(target):
+            return FileResponse(target)
+        # Fallback ref_primary.png -> ref_front.png
+        if "ref_primary" in filename:
+            front = os.path.join(char_dir, "ref_front.png")
+            if os.path.exists(front):
+                return FileResponse(front)
+        # General fallback: check any available reference image in that character's folder
+        for cand in ["ref_front.png", "ref_left.png", "ref_right.png", "ref_primary.png"]:
+            cand_p = os.path.join(char_dir, cand)
+            if os.path.exists(cand_p):
+                return FileResponse(cand_p)
+        raise HTTPException(status_code=404, detail=f"Asset '{filename}' not found for character '{char_id}'.")
+
+    @app.get("/media/{filename:path}")
+    def serve_media_asset(filename: str):
+        # 1. Direct output / master file
+        target = os.path.join(outputs_dir, filename)
+        if os.path.exists(target):
+            return FileResponse(target)
+        # 2. Check masters subdir
+        master_target = os.path.join(outputs_dir, "masters", filename)
+        if os.path.exists(master_target):
+            return FileResponse(master_target)
+        # 3. Handle relative character anchor poses requested via /media/
+        if filename.startswith("ref_"):
+            for root, _, files in os.walk(profiles_dir):
+                if filename in files:
+                    return FileResponse(os.path.join(root, filename))
+                if "ref_primary" in filename and "ref_front.png" in files:
+                    return FileResponse(os.path.join(root, "ref_front.png"))
+        raise HTTPException(status_code=404, detail=f"Media asset '{filename}' not found.")
+
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     app.mount("/media", StaticFiles(directory=outputs_dir), name="media")
     app.mount("/character_profiles", StaticFiles(directory=profiles_dir), name="character_profiles")
@@ -2024,6 +2062,22 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
                         return JSONResponse(colab_res)
                     logger.warning(f"Colab generation returned error: {colab_res.get('error')}. Cascading to local pipeline.")
 
+            res_lower = str(resolution).lower()
+            if "4k" in res_lower or "2160" in res_lower:
+                target_res_str = "4K Ultra HD (3840x2160)"
+            elif "1080" in res_lower:
+                target_res_str = "1080p Full HD (1920x1080)"
+            elif "720" in res_lower:
+                target_res_str = "720p HD (1280x720)"
+            elif "passthrough" in res_lower or "direct" in res_lower:
+                target_res_str = "Passthrough (No Upscaling)"
+            else:
+                target_res_str = "720x480 (SD 480p - Ultra Low VRAM)"
+
+            # Frame system control: allow bypassing frame interpolation if requested
+            skip_frames = body.get("skip_frame_system", False) or (body.get("rife") is False)
+            apply_rife = not skip_frames
+
             master_mp4, _, _, status_md = app_instance.run_master_pipeline(
                 character_dropdown_val=char_id,
                 scene_prompt=prompt,
@@ -2031,8 +2085,9 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
                 guidance_scale=float(cfg),
                 inference_steps=int(steps),
                 base_resolution_str=resolution,
-                target_resolution_str="1080p Full HD (1920x1080)" if resolution == "1080p" else ("720p HD (1280x720)" if resolution == "720p" else "720x480 (SD 480p - Ultra Low VRAM)"),
+                target_resolution_str=target_res_str,
                 aspect_ratio=aspect_ratio,
+                apply_rife_interp=apply_rife,
             )
 
             updated_char = None

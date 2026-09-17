@@ -419,8 +419,8 @@ class Wan21Backend(BaseVideoBackend):
         """
         model = self.load_model(config)
 
-        # Convert input to PIL Image if needed
-        pil_img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+        # Convert input to PIL Image if provided (None for pure Text-to-Video)
+        pil_img = image if isinstance(image, Image.Image) else (Image.fromarray(image) if image is not None else None)
 
         # Verify frame count satisfies (4k + 1)
         valid, adjusted_frames, msg = validate_frame_count(config.num_frames, backend="wan2.1")
@@ -550,7 +550,7 @@ class LTXVideoBackend(BaseVideoBackend):
         Executes LTX-Video Image-to-Video generation.
         """
         model = self.load_model(config)
-        pil_img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+        pil_img = image if isinstance(image, Image.Image) else (Image.fromarray(image) if image is not None else None)
 
         # Verify frame count satisfies (8k + 1)
         valid, adjusted_frames, msg = validate_frame_count(config.num_frames, backend="ltx-video")

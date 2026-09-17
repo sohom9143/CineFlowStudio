@@ -882,10 +882,10 @@
 
         const tree = char.facial_consistency_tree || {};
         const conf = Math.round((tree.identity_confidence || 0.88) * 100);
-        const avatarUrl = char.avatar_url || (char.views && char.views.front ? `/media/${char.views.front}` : "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=120&auto=format&fit=crop&q=60");
+        const avatarUrl = char.avatar_url || (char.views && char.views.front ? `/character_profiles/${char.id}/${char.views.front}` : "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=120&auto=format&fit=crop&q=60");
 
         div.innerHTML = `
-          <img class="w-9 h-9 rounded-lg object-cover shrink-0 bg-surface-container-highest" src="${avatarUrl}" alt="${char.name}"/>
+          <img class="w-9 h-9 rounded-lg object-cover shrink-0 bg-surface-container-highest" src="${avatarUrl}" alt="${char.name}" onerror="this.onerror=null;this.src='https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=120&auto=format&fit=crop&q=60';"/>
           <div class="flex flex-col min-w-0">
             <span class="font-code-md text-code-md text-on-surface truncate group-hover:text-primary transition-colors">${char.name}</span>
             <span class="font-label-caps text-label-caps text-outline-variant">Fidelity ${conf}%</span>
@@ -943,7 +943,17 @@
     function setAnchorPoseImg(elId, path) {
       const el = document.getElementById(elId);
       if (el && path) {
-        el.src = path.startsWith("http") || path.startsWith("/") ? path : `/media/${path}`;
+        if (path.startsWith("http") || path.startsWith("/")) {
+          el.src = path;
+        } else if (activeCharacter && activeCharacter.id) {
+          el.src = `/character_profiles/${activeCharacter.id}/${path}`;
+        } else {
+          el.src = `/media/${path}`;
+        }
+        el.onerror = function() {
+          this.onerror = null;
+          this.src = "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=120&auto=format&fit=crop&q=60";
+        };
       }
     }
 

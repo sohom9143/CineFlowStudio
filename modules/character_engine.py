@@ -1756,6 +1756,55 @@ class CharacterStudio:
     # Character Frame Generation (Stage 1 Pipeline)
     # -------------------------------------------------------------------------
 
+    def _get_authentic_reference_frame(
+        self,
+        character: Optional[CharacterProfile],
+        character_id: str,
+        width: int,
+        height: int,
+    ) -> Optional[Image.Image]:
+        """
+        Loads and crops/scales the character's real reference portrait to target canvas.
+        Bypasses procedural cartoon generation when real photos are available.
+        """
+        char_dir = os.path.join(self.profiles_dir, character_id) if hasattr(self, "profiles_dir") else os.path.join("character_profiles", character_id)
+        if not os.path.exists(char_dir) and character and character.id:
+            char_dir = os.path.join("character_profiles", character.id)
+
+        candidates: List[str] = []
+        if character and character.views:
+            if character.views.get("front"):
+                candidates.append(character.views["front"])
+            if character.views.get("primary"):
+                candidates.append(character.views["primary"])
+        if character and character.reference_images:
+            candidates.extend(character.reference_images)
+        candidates.extend(["ref_front.png", "ref_primary.png", "ref_left.png"])
+
+        for cand in candidates:
+            if not cand:
+                continue
+            cand_p = os.path.join(char_dir, cand) if not os.path.isabs(cand) else cand
+            if os.path.exists(cand_p):
+                try:
+                    img = Image.open(cand_p).convert("RGB")
+                    img_w, img_h = img.size
+                    scale = max(width / img_w, height / img_h)
+                    new_w = max(1, int(round(img_w * scale)))
+                    new_h = max(1, int(round(img_h * scale)))
+                    resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                    # Center crop to target (width, height)
+                    left = max(0, (new_w - width) // 2)
+                    top = max(0, (new_h - height) // 2)
+                    cropped = resized.crop((left, top, min(new_w, left + width), min(new_h, top + height)))
+                    if cropped.size != (width, height):
+                        cropped = cropped.resize((width, height), Image.Resampling.LANCZOS)
+                    logger.info(f"Loaded authentic reference frame for '{character_id}' from '{cand}'.")
+                    return cropped
+                except Exception as e:
+                    logger.warning(f"Could not format reference image '{cand_p}': {e}")
+        return None
+
     @vram_lifecycle_stage("character_generation")
     def generate_character_frame(
         self,
@@ -1776,6 +1825,7 @@ class CharacterStudio:
         
         Supports:
         - InstantID / SDXL diffusers pipeline when GPU & model weights are present.
+        - Authentic reference photo keyframing when real enrolled actor photos are present.
         - Deterministic procedural character frame synthesis in CPU / offline test environments.
         """
         # Resolve seed
@@ -1817,9 +1867,19 @@ class CharacterStudio:
                     **kwargs,
                 )
             except Exception as e:
-                logger.warning(f"GPU InstantID generation failed ({e}). Falling back to deterministic procedural synthesis.")
+                logger.warning(f"GPU InstantID generation failed ({e}). Checking authentic reference image.")
 
-        # Deterministic procedural mock synthesis (CPU / Offline / Testing mode)
+        # Prioritize real actor reference photo over synthetic cartoon drawings
+        authentic_img = self._get_authentic_reference_frame(
+            character=character,
+            character_id=character_id,
+            width=width,
+            height=height,
+        )
+        if authentic_img is not None:
+            return authentic_img
+
+        # Fallback to procedural synthesis only if no reference image is available on disk
         return self._generate_procedural_frame(
             character=character,
             character_id=character_id,
@@ -1997,7 +2057,16 @@ class CharacterStudio:
         precision = self.memory_manager.get_optimal_precision(model_family="diffusion")
         logger.info(f"Target precision: {precision} | Steps: {steps} | Guidance: {guidance}")
 
-        # In absence of loaded weight files in local environment, fallback to procedural rendering
+        # In absence of loaded weight files in local environment, check authentic reference first
+        authentic = self._get_authentic_reference_frame(
+            character=character,
+            character_id=character.id if character else "gpu_char",
+            width=width,
+            height=height,
+        )
+        if authentic is not None:
+            return authentic
+
         return self._generate_procedural_frame(
             character=character,
             character_id=character.id if character else "gpu_char",

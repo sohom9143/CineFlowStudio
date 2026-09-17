@@ -46,13 +46,18 @@ outputs/
 *.mp4
 *.wav
 *.mp3
-*.png
-*.jpg
-*.jpeg
+outputs/**/*.png
+outputs/**/*.jpg
+outputs/**/*.jpeg
+/*.png
+/*.jpg
+/*.jpeg
+
 models/
 *.bin
 *.onnx
 *.safetensors
+*.pth
 *.exe
 *.spec
 
@@ -63,9 +68,10 @@ Thumbs.db
 .idea/
 .agents/
 
-# User-Enrolled Characters (Preserve .gitkeep only)
-character_profiles/*/
-!character_profiles/.gitkeep
+# Allow repository assets & default Character Face Bank
+!assets/**
+!static/**
+!character_profiles/**
 
 # Runtime Tunnel Config
 configs/colab_connection.json

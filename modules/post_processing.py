@@ -489,6 +489,23 @@ class RealESRGANUpscaler:
                 pil_resized = pil_resized.filter(ImageFilter.UnsharpMask(radius=1.5, percent=130, threshold=2))
             return np.array(pil_resized, dtype=np.uint8)
 
+    def _ensure_model_on_device(self) -> None:
+        """Ensures that RealESRGAN model is on the target device and precision before inference."""
+        if self._model is not None and not self._is_mock and TORCH_AVAILABLE:
+            try:
+                first_param = next(self._model.parameters(), None)
+                if first_param is not None:
+                    target_device = torch.device(self.device)
+                    if first_param.device != target_device:
+                        logger.info(f"Restoring RealESRGAN model to {target_device} (was on {first_param.device})...")
+                        self._model.to(target_device)
+                    if self.half_precision and first_param.dtype != torch.float16:
+                        self._model.half()
+                    elif not self.half_precision and first_param.dtype != torch.float32:
+                        self._model.float()
+            except Exception as e:
+                logger.warning(f"Could not re-sync RealESRGAN model device: {e}")
+
     def _upscale_tile(
         self,
         tile: np.ndarray,
@@ -503,6 +520,8 @@ class RealESRGANUpscaler:
 
         if self._model is not None and TORCH_AVAILABLE and not self._is_mock:
             try:
+                self._ensure_model_on_device()
+
                 # Normalize [0, 255] uint8 -> [0.0, 1.0] float tensor
                 tensor = torch.from_numpy(tile).permute(2, 0, 1).unsqueeze(0).float() / 255.0
                 tensor = tensor.to(self.device)
@@ -659,6 +678,8 @@ class RealESRGANUpscaler:
             f"Starting chunked upscaling: {num_frames} frames -> {target_w}x{target_h} "
             f"(Chunk size: {chunk_size}, Tile size: {tile_size}, Device: {self.device})"
         )
+
+        self._ensure_model_on_device()
 
         for chunk_idx in range(0, num_frames, chunk_size):
             chunk = frames[chunk_idx : chunk_idx + chunk_size]
