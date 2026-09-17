@@ -89,6 +89,56 @@ from modules.post_processing import (
     normalize_frame_sequence,
 )
 
+from modules.nle_timeline import (
+    TrackType,
+    ClipTransition,
+    Clip,
+    Track,
+    Marker,
+    TimecodeConverter,
+    NLETimeline,
+)
+
+from modules.color_engine import (
+    ColorWheelVector,
+    ColorGradeSettings,
+    CineColorEngine,
+)
+
+from modules.audio_engine import (
+    EQBand,
+    CompressorSettings,
+    LimiterSettings,
+    NoiseGateSettings,
+    AutoDuckingSettings,
+    FairlightChannelStrip,
+    FairlightAudioEngine,
+)
+
+from modules.meme_vault import (
+    MemeClip,
+    MemeVault,
+)
+
+from modules.transitions_engine import (
+    TransitionDefinition,
+    FontDefinition,
+    SubtitleStylePreset,
+    TransitionsAndFontEngine,
+)
+
+from modules.token_optimizer import (
+    TokenBenchmarkResult,
+    ASTDeltaTokenOptimizer,
+)
+
+from modules.agentic_scripting_engine import (
+    PlanStepStatus,
+    PlanStep,
+    EditingPlan,
+    AgenticScriptingEngine,
+)
+
 __all__ = [
     # M1 Memory Manager
     "VRAMManager",
@@ -152,4 +202,34 @@ __all__ = [
     "parse_resolution",
     "normalize_frame_to_numpy",
     "normalize_frame_sequence",
+    # NLE Studio Core Engines
+    "TrackType",
+    "ClipTransition",
+    "Clip",
+    "Track",
+    "Marker",
+    "TimecodeConverter",
+    "NLETimeline",
+    "ColorWheelVector",
+    "ColorGradeSettings",
+    "CineColorEngine",
+    "EQBand",
+    "CompressorSettings",
+    "LimiterSettings",
+    "NoiseGateSettings",
+    "AutoDuckingSettings",
+    "FairlightChannelStrip",
+    "FairlightAudioEngine",
+    "MemeClip",
+    "MemeVault",
+    "TransitionDefinition",
+    "FontDefinition",
+    "SubtitleStylePreset",
+    "TransitionsAndFontEngine",
+    "TokenBenchmarkResult",
+    "ASTDeltaTokenOptimizer",
+    "PlanStepStatus",
+    "PlanStep",
+    "EditingPlan",
+    "AgenticScriptingEngine",
 ]
