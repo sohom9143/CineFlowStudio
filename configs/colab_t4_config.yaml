@@ -41,7 +41,7 @@ paths:
 character_engine:
   model_id: "InstantX/SDXL-InstantID"
   insightface_app: "buffalo_l"
-  default_character: "siddhartha"
+  default_character: "default"
   embedding_dim: 512
   face_detection_threshold: 0.65
   width: 720

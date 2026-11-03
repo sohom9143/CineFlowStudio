@@ -97,13 +97,19 @@ except ImportError:
 # FastAPI & Web Server imports for the 15-Year Designer Studio Interface
 try:
     from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
-    from fastapi.responses import FileResponse, JSONResponse
+    from fastapi.responses import FileResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
     from fastapi.middleware.cors import CORSMiddleware
     import uvicorn
     FASTAPI_AVAILABLE = True
 except ImportError:
     FASTAPI_AVAILABLE = False
+
+DEFAULT_AVATAR_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect width="128" height="128" fill="#182030" rx="16"/>
+  <circle cx="64" cy="48" r="22" fill="#6366f1"/>
+  <path d="M28 106 c0 -20 16 -36 36 -36 s36 16 36 36 Z" fill="#818cf8"/>
+</svg>"""
 
 # Setup Logger
 logger = logging.getLogger("CineFlow.App")
@@ -608,6 +614,7 @@ class CineFlowApp:
 
     def run_master_pipeline(
         self,
+        input_image: Optional[Union[Image.Image, np.ndarray, str]] = None,
         character_dropdown_val: Optional[str] = None,
         scene_prompt: str = "",
         motion_prompt: str = "",
@@ -633,7 +640,8 @@ class CineFlowApp:
         **kwargs: Any,
     ) -> Tuple[Optional[str], Optional[str], str, str]:
         """
-        Executes the 4-stage CineFlow-AI production pipeline with Zero-OOM VRAM lifecycle.
+        Executes the streamlined CineFlow-AI production pipeline with Zero-OOM VRAM lifecycle.
+        Supports both Pure Text-to-Video (T2V) and Image-to-Video (I2V) workflows.
         """
         start_time = time.time()
         char_raw = character_dropdown_val or character_choice or (self.get_character_names()[0] if self.get_character_names() else "")
@@ -682,19 +690,43 @@ class CineFlowApp:
 
         try:
             # -----------------------------------------------------------------
-            # Stage 1: Character Frame Generation
+            # Stage 1: Keyframe Preparation (Image-to-Video vs Text-to-Video)
             # -----------------------------------------------------------------
-            if progress:
-                progress(0.1, desc="[Stage 1/4] Synthesizing Identity Keyframe...")
+            img_candidate = input_image or kwargs.get("image") or kwargs.get("keyframe_image")
+            keyframe = None
+            if img_candidate is not None:
+                if isinstance(img_candidate, str):
+                    if img_candidate.startswith("data:image"):
+                        import base64, io
+                        b64_data = img_candidate.split(",", 1)[-1]
+                        keyframe = Image.open(io.BytesIO(base64.b64decode(b64_data))).convert("RGB")
+                    elif os.path.exists(img_candidate):
+                        keyframe = Image.open(img_candidate).convert("RGB")
+                elif isinstance(img_candidate, Image.Image):
+                    keyframe = img_candidate.convert("RGB")
+                elif isinstance(img_candidate, np.ndarray):
+                    keyframe = Image.fromarray(img_candidate).convert("RGB")
 
-            keyframe = self.character_studio.generate_character_frame(
-                character_id=char_id,
-                scene_prompt=scene_prompt,
-                style_id=style_id,
-                width=base_w,
-                height=base_h,
-                seed=effective_seed,
-            )
+            if keyframe is not None:
+                # Image-to-Video Mode
+                if keyframe.size != (base_w, base_h):
+                    keyframe = keyframe.resize((base_w, base_h), Image.Resampling.LANCZOS)
+                logger.info(f"Image-to-Video Mode active: Using provided input image ({base_w}x{base_h}).")
+                if progress:
+                    progress(0.15, desc="[Stage 1/4] Preparing Input Keyframe Image (I2V)...")
+            else:
+                # Text-to-Video Mode
+                if progress:
+                    progress(0.1, desc="[Stage 1/4] Synthesizing Scene Keyframe from Prompt...")
+                effective_char = char_id if (char_id and char_id != "default") else ""
+                keyframe = self.character_studio.generate_character_frame(
+                    character_id=effective_char,
+                    scene_prompt=scene_prompt,
+                    style_id=style_id,
+                    width=base_w,
+                    height=base_h,
+                    seed=effective_seed,
+                )
 
             # -----------------------------------------------------------------
             # Stage 2: Video Motion Synthesis
@@ -702,8 +734,9 @@ class CineFlowApp:
             if progress:
                 progress(0.35, desc=f"[Stage 2/4] Generating Video Motion ({backend_key})...")
 
+            effective_motion = motion_prompt or scene_prompt or "Smooth cinematic motion, natural movement."
             video_cfg = VideoGenerationConfig(
-                motion_prompt=motion_prompt,
+                motion_prompt=effective_motion,
                 backend=backend_key,
                 num_frames=int(num_frames),
                 fps=24,
@@ -716,32 +749,29 @@ class CineFlowApp:
             )
             raw_video_frames = self.video_engine.generate_motion(
                 image=keyframe,
-                motion_prompt=motion_prompt,
+                motion_prompt=effective_motion,
                 config=video_cfg,
             )
 
             # -----------------------------------------------------------------
-            # Stage 3: Bengali Dialogue Lip-Sync
+            # Stage 3: Optional Dialogue Lip-Sync (Bypassed if no audio provided)
             # -----------------------------------------------------------------
-            if progress:
-                progress(0.65, desc="[Stage 3/4] Aligning Dialogue Lip-Sync...")
-
-            processed_audio_path = audio_raw
-            if not audio_raw or not os.path.exists(audio_raw):
-                temp_audio_out = os.path.join(self.temp_dir, f"dialogue_{int(time.time())}.wav")
-                dur_sec = max(1.0, len(raw_video_frames) / 24.0)
-                synthesize_dialogue_waveform(duration_sec=dur_sec, output_path=temp_audio_out)
-                processed_audio_path = temp_audio_out
-
-            lipsync_cfg = LipSyncConfig(
-                fps=24,
-                backend="liveportrait" if self.memory_manager.is_cuda else "mock",
-            )
-            synced_frames, processed_audio_path = self.lipsync_engine.synchronize_lips(
-                frames=raw_video_frames,
-                audio_path=processed_audio_path,
-                config=lipsync_cfg,
-            )
+            if audio_raw and os.path.exists(audio_raw):
+                if progress:
+                    progress(0.65, desc="[Stage 3/4] Aligning Dialogue Lip-Sync...")
+                lipsync_cfg = LipSyncConfig(
+                    fps=24,
+                    backend="liveportrait" if self.memory_manager.is_cuda else "mock",
+                )
+                synced_frames, processed_audio_path = self.lipsync_engine.synchronize_lips(
+                    frames=raw_video_frames,
+                    audio_path=audio_raw,
+                    config=lipsync_cfg,
+                )
+            else:
+                # Pure Video Stream without synthetic audio overhead
+                synced_frames = raw_video_frames
+                processed_audio_path = None
 
             # -----------------------------------------------------------------
             # Stage 4: Post-Production & Master Rendering
@@ -1104,657 +1134,253 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
     }
     """
 
-    with gr.Blocks(title="CineFlow-AI Universal Studio", css=custom_css, theme=gr.themes.Soft()) as demo:
-
-        # ---------------------------------------------------------------------
+    with gr.Blocks(title="CineFlow AI Studio - Video Generator", css=custom_css, theme=gr.themes.Soft()) as demo:
         # Header Banner
-        # ---------------------------------------------------------------------
         with gr.Row():
             gr.HTML(
                 """
                 <div class="cinema-header">
-                    <h1>🎬 CineFlow-AI: Universal AI Video Studio</h1>
-                    <p>Beginner-Friendly Text-to-Video • Cinematic AI Ingredients • Multi-Angle 360° Face Locking • 60 FPS Super-Resolution</p>
-                    <div style="margin-top: 10px;">
-                        <span class="vram-badge">🤖 AI Director Agent</span>
-                        <span class="vram-badge">🍱 AI Ingredient Set</span>
+                    <h1>🎬 CineFlow AI Studio</h1>
+                    <p>High-Performance Cinematic Video Generator • Text-to-Video & Image-to-Video • Ultra-Low RAM</p>
+                    <div style="margin-top: 8px;">
                         <span class="vram-badge">⚡ Wan 2.1 DiT (FP8)</span>
-                        <span class="vram-badge">🧬 360° Face Adapter</span>
-                        <span class="vram-badge">🎙️ Multilingual LipSync</span>
-                        <span class="vram-badge">✨ Real-ESRGAN 1080p/4K</span>
-                        <span class="vram-badge">🎞️ RIFE 60fps</span>
+                        <span class="vram-badge">🚀 High-Speed Passthrough</span>
+                        <span class="vram-badge">🎞️ 24 FPS Cinematic</span>
+                        <span class="vram-badge">🧠 Zero-OOM VRAM Manager</span>
                     </div>
                 </div>
                 """
             )
 
         # ---------------------------------------------------------------------
-        # Top Settings Accordion: Gemini AI Agent & Hot-Reload Daemon
+        # TAB 1: Text to Video (T2V)
         # ---------------------------------------------------------------------
-        with gr.Accordion("🤖 AI Director Agent & Studio Watchdog Settings (Optional API Key)", open=False):
+        with gr.TabItem("✍️ Text to Video", id="tab_t2v"):
             with gr.Row():
-                gemini_api_key_input = gr.Textbox(
-                    label="Google Gemini API Key (Optional)",
-                    placeholder="Enter AI Studio API Key (e.g. AIzaSy...)",
-                    type="password",
-                    scale=4,
-                )
-                gemini_model_dropdown = gr.Dropdown(
-                    label="Gemini Agent Model",
-                    choices=["gemini-2.5-flash (Recommended)", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
-                    value="gemini-2.5-flash (Recommended)",
-                    scale=3,
-                )
-                save_gemini_key_btn = gr.Button("💾 Connect / Update Key", variant="secondary", scale=2)
-                hot_reload_btn = gr.Button("🔄 Hot-Reload Studio State", variant="secondary", scale=2)
-            
-            gemini_status_md = gr.Markdown(value=app_instance.get_gemini_status_markdown())
-
-        # ---------------------------------------------------------------------
-        # TAB 1: Simple Text-to-Video Studio (Beginner Friendly)
-        # ---------------------------------------------------------------------
-        with gr.TabItem("🎬 Text to Video Studio", id="tab_studio"):
-            with gr.Row():
-                # Left Column: Simple Inputs & Ingredient Matrix
                 with gr.Column(scale=6):
-                    gr.Markdown("### ✍️ Step 1: Describe Your Scene or Pick a Template")
-                    hero_prompt_input = gr.Textbox(
-                        label="Scene Story / Prompt (English, Bengali, or Banglish)",
-                        placeholder="e.g. A futuristic sci-fi shot of Dev standing in a rainy cyberpunk alley under glowing neon billboards, camera pushing in slowly...",
-                        lines=3,
-                        value="A futuristic cyberpunk shot of Dev walking down a rainy Neo-Tokyo alleyway under glowing holographic billboards, camera pushing in slowly.",
+                    gr.Markdown("### 1. Scene Story & Prompts")
+                    t2v_prompt = gr.Textbox(
+                        label="Scene Prompt (Describe your video)",
+                        placeholder="e.g. A cinematic shot of a misty pine forest at sunrise, soft golden volumetric sunbeams, gentle camera push forward...",
+                        lines=4,
+                        value="A cinematic shot of a misty pine forest at sunrise, soft golden volumetric sunbeams filtering through ancient trees, gentle camera push forward.",
+                    )
+                    t2v_motion = gr.Textbox(
+                        label="Camera Motion & Direction (Optional)",
+                        placeholder="e.g. Slow cinematic forward push, gentle panning, soft focal drift",
+                        lines=1,
+                        value="Slow cinematic push-in camera motion, natural environmental movement.",
                     )
 
                     with gr.Row():
-                        gr.Markdown("**Quick Templates:**")
-                        btn_sample_cyberpunk = gr.Button("🌃 Cyberpunk", size="sm")
-                        btn_sample_vintage = gr.Button("📜 Vintage Kolkata", size="sm")
-                        btn_sample_ghibli = gr.Button("🍃 Studio Ghibli", size="sm")
-                        btn_sample_fantasy = gr.Button("🏰 Epic Fantasy", size="sm")
-                        btn_sample_luxury = gr.Button("💎 Luxury Ad", size="sm")
-
-                    with gr.Row():
-                        agent_plan_btn = gr.Button("🪄 ✨ Auto-Fill Ingredients with AI Director", variant="secondary", size="lg", scale=3)
-                        agent_execute_btn = gr.Button("🚀 🎬 Generate Video (1-Click)", variant="primary", size="lg", scale=3)
-
-                    gr.Markdown("### 🍱 Step 2: Cinematic Ingredient Set (Customize or AI Auto-Filled)")
-                    with gr.Row():
-                        char_dropdown = gr.Dropdown(
-                            label="🎭 Actor / Character Identity",
-                            choices=app_instance.get_character_names(),
-                            value=app_instance.get_character_names()[0] if app_instance.get_character_names() else None,
-                            scale=4,
-                        )
-                        refresh_chars_btn = gr.Button("🔄", size="sm", scale=1)
-                        style_dropdown = gr.Dropdown(
-                            label="🎨 Universal Cinematic Style Preset",
-                            choices=app_instance.get_style_names(),
-                            value=app_instance.get_style_names()[0] if app_instance.get_style_names() else "IMAX 8K Cinematic Realism (imax_realism)",
-                            scale=5,
-                        )
-
-                    with gr.Row():
-                        decomp_camera = gr.Textbox(
-                            label="🎥 Camera & Lens Movement",
-                            placeholder="e.g. Slow cinematic push-in dolly forward with 35mm anamorphic lens",
-                            interactive=True,
-                            lines=2,
+                        t2v_aspect = gr.Dropdown(
+                            label="Aspect Ratio",
+                            choices=["16:9 (Landscape)", "9:16 (Portrait / Reels)", "1:1 (Square)"],
+                            value="16:9 (Landscape)",
                             scale=1,
                         )
-                        decomp_lighting = gr.Textbox(
-                            label="💡 Lighting & Chiaroscuro",
-                            placeholder="e.g. Vibrant neon cyan & magenta rim lighting with wet reflections",
-                            interactive=True,
-                            lines=2,
+                        t2v_res = gr.Dropdown(
+                            label="Resolution Target",
+                            choices=[
+                                "Passthrough (No Upscaling - Ultra Low RAM)",
+                                "720p HD (1280x720)",
+                                "1080p Full HD (1920x1080)",
+                            ],
+                            value="Passthrough (No Upscaling - Ultra Low RAM)",
+                            scale=1,
+                        )
+                        t2v_frames = gr.Slider(
+                            label="Frame Count (DiT 4k+1)",
+                            minimum=9,
+                            maximum=81,
+                            step=4,
+                            value=49,
                             scale=1,
                         )
 
-                    with gr.Row():
-                        decomp_environment = gr.Textbox(
-                            label="🌍 Environment & World",
-                            placeholder="e.g. Rainy Neo-Tokyo alley with glowing holographic billboards",
-                            interactive=True,
-                            lines=2,
-                            scale=1,
-                        )
-                        decomp_wardrobe = gr.Textbox(
-                            label="👗 Wardrobe & Styling",
-                            placeholder="e.g. Black high-collar cyberpunk techwear trenchcoat",
-                            interactive=True,
-                            lines=2,
-                            scale=1,
-                        )
-
-                    with gr.Accordion("🔍 Detailed Ingredient Breakdown & Prompts", open=False):
+                    with gr.Accordion("⚙️ Advanced Parameters (Optional)", open=False):
                         with gr.Row():
-                            decomp_subject = gr.Textbox(label="👤 Subject & Physical Action", interactive=True, lines=2)
-                            decomp_atmosphere = gr.Textbox(label="🌫️ Atmosphere & Weather", interactive=True, lines=2)
-                        with gr.Row():
-                            scene_prompt_input = gr.Textbox(label="Direct Scene Prompt (Positive)", interactive=True, lines=2)
-                            motion_prompt_input = gr.Textbox(label="Direct Motion Prompt", interactive=True, lines=2)
-                        agent_plan_summary_md = gr.Markdown("AI Director analysis will appear here.")
-
-                    with gr.Accordion("⚙️ Pro & Audio Settings (Lip-Sync, Engine, Resolution)", open=False):
-                        with gr.Row():
-                            audio_input = gr.Audio(
-                                label="Upload Dialogue Audio (.wav, .mp3) for Lip-Sync",
-                                type="filepath",
-                            )
-                        with gr.Row():
-                            backend_radio = gr.Radio(
-                                label="Video Motion Backend",
+                            t2v_backend = gr.Radio(
+                                label="Video Backend",
                                 choices=["Wan 2.1 FP8 (Primary DiT)", "LTX-Video (Fast DiT)", "Procedural Mock (CPU / Test)"],
                                 value="Wan 2.1 FP8 (Primary DiT)",
                             )
-                            base_res_dropdown = gr.Dropdown(
-                                label="Base DiT Resolution",
-                                choices=[
-                                    "720x480 (SD 480p - Ultra Low VRAM)",
-                                    "848x480 (Widescreen 480p)",
-                                    "1280x720 (HD 720p - Recommended)",
-                                ],
-                                value="720x480 (SD 480p - Ultra Low VRAM)",
-                            )
                         with gr.Row():
-                            target_res_dropdown = gr.Dropdown(
-                                label="Super-Resolution Target",
-                                choices=[
-                                    "Passthrough (No Upscaling - Ultra Low RAM)",
-                                    "720p HD (1280x720)",
-                                    "1080p Full HD (1920x1080)",
-                                    "4K Ultra HD (3840x2160)",
-                                ],
-                                value="Passthrough (No Upscaling - Ultra Low RAM)",
-                            )
-                            frames_slider = gr.Slider(
-                                label="Frame Count (4k+1 Rule for DiT)",
-                                minimum=9,
-                                maximum=81,
-                                step=4,
-                                value=49,
-                            )
-                            rife_checkbox = gr.Checkbox(label="RIFE 60fps Interpolation", value=False)
+                            t2v_steps = gr.Slider(label="Inference Steps", minimum=15, maximum=50, step=1, value=30)
+                            t2v_cfg = gr.Slider(label="CFG Scale", minimum=3.0, maximum=15.0, step=0.5, value=7.5)
+                            t2v_motion_scale = gr.Slider(label="Motion Scale", minimum=0.5, maximum=2.0, step=0.1, value=1.0)
+                            t2v_seed = gr.Number(label="Seed (-1 for Random)", value=-1, precision=0)
 
-                        with gr.Row():
-                            steps_slider = gr.Slider(label="Inference Steps", minimum=15, maximum=50, step=1, value=30)
-                            guidance_slider = gr.Slider(label="CFG Guidance Scale", minimum=3.0, maximum=15.0, step=0.5, value=7.5)
-                            motion_scale_slider = gr.Slider(label="Motion Scale", minimum=0.5, maximum=2.0, step=0.1, value=1.0)
-                            seed_number = gr.Number(label="Seed (-1 for Random)", value=-1, precision=0)
+                    t2v_generate_btn = gr.Button("🚀 Generate Video from Text", variant="primary", size="lg")
 
-                        with gr.Row():
-                            flush_vram_btn = gr.Button("🧹 Flush VRAM Cache", variant="secondary", size="sm")
-
-                # Right Column: Output Player & Real-Time Telemetry
                 with gr.Column(scale=5):
                     gr.Markdown("### 📺 Master Video Player & Output")
-                    master_video_player = gr.Video(
-                        label="Master Cinematic Video Output",
-                        height=380,
-                        interactive=False,
-                    )
-                    download_file_btn = gr.File(
-                        label="⬇️ Download Broadcast Master MP4",
-                        interactive=False,
-                    )
-
-                    telemetry_markdown = gr.Markdown(value=app_instance.get_telemetry_markdown())
-                    status_markdown = gr.Markdown("Ready to generate cinematic video.")
+                    t2v_video_player = gr.Video(label="Generated Cinematic Video", height=380, interactive=False)
+                    t2v_download_btn = gr.File(label="⬇️ Download Video (MP4)", interactive=False)
+                    t2v_telemetry = gr.Markdown(value=app_instance.get_telemetry_markdown())
+                    t2v_status = gr.Markdown("Ready to generate video.")
 
         # ---------------------------------------------------------------------
-        # TAB 2: Character Face Bank & AI Training Studio
+        # TAB 2: Image to Video (I2V)
         # ---------------------------------------------------------------------
-        with gr.TabItem("👤 Character Face Bank & Training Studio", id="tab_char_manager"):
+        with gr.TabItem("🖼️ Image to Video", id="tab_i2v"):
             with gr.Row():
-                # Left Column: Enrollment & On-Demand Training
-                with gr.Column(scale=5):
-                    gr.Markdown("### ➕ Dynamic Face Enrollment (3/4-Sides or Batch)")
-                    enroll_name_input = gr.Textbox(label="Character Full Name", placeholder="e.g. Dev, Arya, Zara...")
-                    enroll_desc_input = gr.Textbox(label="Character Role & Bio", placeholder="e.g. Cyberpunk detective in 2077 Neo-Tokyo...")
-                    enroll_gender_radio = gr.Radio(label="Gender", choices=["Male", "Female", "Neutral"], value="Male")
-                    enroll_prompt_prefix = gr.Textbox(
-                        label="Custom Prompt Prefix (Leave blank for Gemini AI Auto-Generation)",
-                        placeholder="Auto-generated by Gemini Vision Agent if left empty...",
-                        lines=2,
+                with gr.Column(scale=6):
+                    gr.Markdown("### 1. Starting Keyframe Image & Motion")
+                    i2v_image = gr.Image(
+                        label="Upload Input Keyframe Image (Drag & Drop or Click)",
+                        type="pil",
                     )
-
-                    with gr.Tabs():
-                        with gr.TabItem("📸 Multi-Angle 360° Sides (3 or 4 Sides)"):
-                            gr.Markdown("*Upload distinct sides of the person for 360° rotation and consensus facial features.*")
-                            with gr.Row():
-                                enroll_front_upload = gr.File(label="👤 Front View (0°)", file_types=["image"])
-                                enroll_left_upload = gr.File(label="👈 Left Side (90°)", file_types=["image"])
-                            with gr.Row():
-                                enroll_right_upload = gr.File(label="👉 Right Side (270°)", file_types=["image"])
-                                enroll_back_upload = gr.File(label="🔄 Back / Rear (180° - Optional)", file_types=["image"])
-                        with gr.TabItem("📁 Batch Multi-Photo Upload"):
-                            enroll_photos_upload = gr.File(
-                                label="Upload 1-5 Portrait Photos (.jpg, .png)",
-                                file_count="multiple",
-                                file_types=["image"],
-                            )
+                    i2v_motion = gr.Textbox(
+                        label="Motion Prompt / Animation Instructions",
+                        placeholder="e.g. Subtle wind blowing through hair and clothes, gentle eye blink and smile, slow cinematic drift...",
+                        lines=3,
+                        value="Gentle atmospheric wind movement, soft cinematic camera drift, natural lighting shifts.",
+                    )
 
                     with gr.Row():
-                        enroll_action_btn = gr.Button("✨ Extract Embeddings & Register Profile", variant="primary", size="lg")
-
-                    with gr.Group():
-                        gr.Markdown("### 🏋️ On-Demand Face Adapter Training Engine")
-                        gr.Markdown(
-                            "Fine-tunes a specialized facial adapter cache for the selected character, "
-                            "generating multi-angle augmentations and locking identity coordinates."
+                        i2v_aspect = gr.Dropdown(
+                            label="Aspect Ratio",
+                            choices=["16:9 (Landscape)", "9:16 (Portrait / Reels)", "1:1 (Square)"],
+                            value="16:9 (Landscape)",
+                            scale=1,
                         )
+                        i2v_res = gr.Dropdown(
+                            label="Resolution Target",
+                            choices=[
+                                "Passthrough (No Upscaling - Ultra Low RAM)",
+                                "720p HD (1280x720)",
+                                "1080p Full HD (1920x1080)",
+                            ],
+                            value="Passthrough (No Upscaling - Ultra Low RAM)",
+                            scale=1,
+                        )
+                        i2v_frames = gr.Slider(
+                            label="Frame Count (DiT 4k+1)",
+                            minimum=9,
+                            maximum=81,
+                            step=4,
+                            value=49,
+                            scale=1,
+                        )
+
+                    with gr.Accordion("⚙️ Advanced Parameters (Optional)", open=False):
                         with gr.Row():
-                            aug_factor_slider = gr.Slider(label="Augmentation Variations", minimum=4, maximum=16, step=2, value=8)
-                            train_adapter_btn = gr.Button("🏋️ Train Face Adapter & Lock Identity", variant="primary")
-                        
-                        train_adapter_status_md = gr.Markdown("Face adapter ready for fine-tuning.")
+                            i2v_backend = gr.Radio(
+                                label="Video Backend",
+                                choices=["Wan 2.1 FP8 (Primary DiT)", "LTX-Video (Fast DiT)", "Procedural Mock (CPU / Test)"],
+                                value="Wan 2.1 FP8 (Primary DiT)",
+                            )
+                        with gr.Row():
+                            i2v_steps = gr.Slider(label="Inference Steps", minimum=15, maximum=50, step=1, value=30)
+                            i2v_cfg = gr.Slider(label="CFG Scale", minimum=3.0, maximum=15.0, step=0.5, value=7.5)
+                            i2v_motion_scale = gr.Slider(label="Motion Scale", minimum=0.5, maximum=2.0, step=0.1, value=1.0)
+                            i2v_seed = gr.Number(label="Seed (-1 for Random)", value=-1, precision=0)
 
-                    enroll_status_md = gr.Markdown("Ready for new character enrollment.")
+                    i2v_generate_btn = gr.Button("🚀 Animate Image to Video", variant="primary", size="lg")
 
-                # Right Column: 360° Inspection, Traits & Adapter Status
                 with gr.Column(scale=5):
-                    gr.Markdown("### 🌟 Character 360° Inspection & Face Bank")
-                    char_choices = app_instance.get_character_names()
-                    with gr.Row():
-                        inspect_char_dropdown = gr.Dropdown(
-                            label="Select Character to Inspect",
-                            choices=char_choices,
-                            value=char_choices[0] if char_choices else None,
-                            scale=4,
-                        )
-                        refresh_inspect_btn = gr.Button("🔄", size="sm", scale=1)
+                    gr.Markdown("### 📺 Master Video Player & Output")
+                    i2v_video_player = gr.Video(label="Generated Cinematic Video", height=380, interactive=False)
+                    i2v_download_btn = gr.File(label="⬇️ Download Video (MP4)", interactive=False)
+                    i2v_telemetry = gr.Markdown(value=app_instance.get_telemetry_markdown())
+                    i2v_status = gr.Markdown("Ready to animate image.")
 
-                    enroll_360_viewer = gr.HTML(
-                        value=app_instance.get_character_360_html(char_choices[0]) if char_choices else "<p style='color:#94a3b8; padding:15px; text-align:center;'>No custom character enrolled yet. Enroll your actor on the left.</p>",
-                    )
+        # Bottom Toolbar
+        with gr.Row():
+            flush_vram_btn = gr.Button("🧹 Flush VRAM Cache", variant="secondary", size="sm")
 
-                    with gr.Accordion("🔍 Face Consensus Thumbnail", open=False):
-                        enroll_preview_output = gr.Image(
-                            label="Enrolled Face Consensus Thumbnail",
-                            height=200,
-                            interactive=False,
-                        )
-
-                    with gr.Accordion("🧬 Deep Multimodal Facial Traits & Face Adapter Status", open=True):
-                        char_traits_md = gr.Markdown(value=app_instance.get_character_traits_markdown(char_choices[0]) if char_choices else "*No characters enrolled yet.*")
-
-                    gr.Markdown("### 🗃️ User-Driven Digital Actor Roster")
-                    gr.HTML(
-                        """
-                        <div style="background:#0f172a; padding:15px; border-radius:8px; border:1px solid #1e293b;">
-                            <p style="color:#4cd7f6; font-weight:600; margin-bottom:6px;">🧬 Dynamic Facial Consistency JSON Tree Active</p>
-                            <p style="color:#94a3b8; font-size:13px;">Characters in CineFlow are 100% user-created. Each enrolled character maintains biometric geometry, 512-D ArcFace consensus vectors, and anchor keyframes (Grit, Action, Dialogue, Noir). Every video generated deepens identity stability.</p>
-                        </div>
-                        """
-                    )
-
-        # ---------------------------------------------------------------------
-        # TAB 3: History Gallery & Render Archive
-        # ---------------------------------------------------------------------
-        with gr.TabItem("📜 History Gallery & Render Archive", id="tab_history"):
-            with gr.Row():
-                with gr.Column(scale=10):
-                    gr.Markdown("### 🗄️ Studio Master Render Archive")
-                    refresh_history_btn = gr.Button("🔄 Refresh Render Archive", size="sm")
-
-                    history_gallery_table = gr.Dataframe(
-                        headers=["Filename", "Character", "Style", "Resolution", "FPS", "Duration (s)", "Size", "Created At"],
-                        datatype=["str", "str", "str", "str", "number", "number", "str", "str"],
-                        value=[
-                            [
-                                item["filename"],
-                                item["character"],
-                                item["style"],
-                                item["resolution"],
-                                item["fps"],
-                                item["duration"],
-                                item["size_mb"],
-                                item["created_at"],
-                            ]
-                            for item in app_instance.get_history_items()
-                        ],
-                        interactive=False,
-                    )
-
-        # ---------------------------------------------------------------------
-        # TAB 4: Model Hub & AI Weights Downloader
-        # ---------------------------------------------------------------------
-        with gr.TabItem("🧠 Model Hub & Weights Downloader", id="tab_model_hub"):
-            with gr.Row():
-                with gr.Column(scale=10):
-                    gr.Markdown("### 📥 Neural Network Weights & Pipeline Model Manager")
-                    gr.Markdown(
-                        "Manage, verify, and download all required neural model weights for the studio "
-                        "(Real-ESRGAN super-resolution, Wav2Lip lip-sync, InsightFace Face Bank embeddings, "
-                        "and DiT diffusion backends). Click **Download All Required Models** for local setup."
-                    )
-                    
-                    with gr.Row():
-                        download_all_models_btn = gr.Button("⬇️ Download All Required Models", variant="primary")
-                        refresh_models_btn = gr.Button("🔄 Check Models Status", size="sm")
-
-                    model_download_status_md = gr.Markdown("Status: Ready to check or download models.")
-
-                    models_status_table = gr.Dataframe(
-                        headers=["Model / Weight File", "Pipeline Engine", "Status", "Size", "Destination Path"],
-                        datatype=["str", "str", "str", "str", "str"],
-                        value=app_instance.get_model_status_rows(),
-                        interactive=False,
-                    )
-
-        # ---------------------------------------------------------------------
-        # Event Callbacks & Interactivity
-        # ---------------------------------------------------------------------
-
-        # 0. Gemini Settings & Hot Reload
-        save_gemini_key_btn.click(
-            fn=app_instance.update_gemini_config,
-            inputs=[gemini_api_key_input, gemini_model_dropdown],
-            outputs=[gemini_status_md],
-        )
-
-        hot_reload_btn.click(
-            fn=app_instance.hot_reload_studio,
-            inputs=[],
-            outputs=[gemini_status_md, char_dropdown, inspect_char_dropdown, style_dropdown],
-        )
-
-        # 1. Starter Template Buttons
-        sample_prompts_map = {
-            "cyberpunk": "A futuristic cyberpunk shot of Dev walking down a rainy Neo-Tokyo alleyway under glowing holographic billboards, camera pushing in slowly.",
-            "vintage": "Dev in North Kolkata tram depot in evening golden light, slow cinematic tracking shot across vintage tracks.",
-            "ghibli": "Meghla walking through a magical enchanted meadow with glowing spirits and soft floating dandelion seeds in Studio Ghibli anime style.",
-            "fantasy": "A heroic cinematic shot of Neel standing on a cliff before an ancient castle under dramatic moonlight and storm clouds.",
-            "luxury": "A high-fashion luxury studio commercial portrait of Dev under soft diffused three-point lighting with rich textures.",
-        }
-
-        def on_click_template(template_key):
-            p = sample_prompts_map.get(template_key, "")
-            res = app_instance.orchestrate_agent_shot(p)
-            return (
-                p,
-                res[0], # summary
-                res[1], # subj
-                res[2], # cam
-                res[3], # lighting
-                res[4], # env
-                res[5], # atmo
-                res[6], # wardrobe
-                res[7], # scene_prompt
-                res[8], # motion_prompt
-                res[9], # char
-                res[10], # style
+        # Event Bindings
+        def on_generate_t2v(prompt, motion, aspect, res, frames, backend, steps, cfg, motion_scale, seed, progress=gr.Progress()):
+            aspect_norm = "16:9" if "16:9" in aspect else ("9:16" if "9:16" in aspect else "1:1")
+            effective_seed = int(seed) if seed is not None and seed >= 0 else None
+            return app_instance.run_master_pipeline(
+                input_image=None,
+                scene_prompt=prompt,
+                motion_prompt=motion,
+                aspect_ratio=aspect_norm,
+                target_resolution_str=res,
+                num_frames=int(frames),
+                inference_steps=int(steps),
+                guidance_scale=float(cfg),
+                motion_scale=float(motion_scale),
+                backend_choice=backend,
+                seed=effective_seed,
+                progress=progress,
             )
 
-        btn_sample_cyberpunk.click(
-            fn=lambda: on_click_template("cyberpunk"),
-            inputs=[],
-            outputs=[
-                hero_prompt_input,
-                agent_plan_summary_md,
-                decomp_subject,
-                decomp_camera,
-                decomp_lighting,
-                decomp_environment,
-                decomp_atmosphere,
-                decomp_wardrobe,
-                scene_prompt_input,
-                motion_prompt_input,
-                char_dropdown,
-                style_dropdown,
-            ],
-        )
-
-        btn_sample_vintage.click(
-            fn=lambda: on_click_template("vintage"),
-            inputs=[],
-            outputs=[
-                hero_prompt_input,
-                agent_plan_summary_md,
-                decomp_subject,
-                decomp_camera,
-                decomp_lighting,
-                decomp_environment,
-                decomp_atmosphere,
-                decomp_wardrobe,
-                scene_prompt_input,
-                motion_prompt_input,
-                char_dropdown,
-                style_dropdown,
-            ],
-        )
-
-        btn_sample_ghibli.click(
-            fn=lambda: on_click_template("ghibli"),
-            inputs=[],
-            outputs=[
-                hero_prompt_input,
-                agent_plan_summary_md,
-                decomp_subject,
-                decomp_camera,
-                decomp_lighting,
-                decomp_environment,
-                decomp_atmosphere,
-                decomp_wardrobe,
-                scene_prompt_input,
-                motion_prompt_input,
-                char_dropdown,
-                style_dropdown,
-            ],
-        )
-
-        btn_sample_fantasy.click(
-            fn=lambda: on_click_template("fantasy"),
-            inputs=[],
-            outputs=[
-                hero_prompt_input,
-                agent_plan_summary_md,
-                decomp_subject,
-                decomp_camera,
-                decomp_lighting,
-                decomp_environment,
-                decomp_atmosphere,
-                decomp_wardrobe,
-                scene_prompt_input,
-                motion_prompt_input,
-                char_dropdown,
-                style_dropdown,
-            ],
-        )
-
-        btn_sample_luxury.click(
-            fn=lambda: on_click_template("luxury"),
-            inputs=[],
-            outputs=[
-                hero_prompt_input,
-                agent_plan_summary_md,
-                decomp_subject,
-                decomp_camera,
-                decomp_lighting,
-                decomp_environment,
-                decomp_atmosphere,
-                decomp_wardrobe,
-                scene_prompt_input,
-                motion_prompt_input,
-                char_dropdown,
-                style_dropdown,
-            ],
-        )
-
-        # 2. AI Director Agent Orchestration (Auto-Fill Ingredients)
-        agent_plan_btn.click(
-            fn=app_instance.orchestrate_agent_shot,
-            inputs=[hero_prompt_input, style_dropdown],
-            outputs=[
-                agent_plan_summary_md,
-                decomp_subject,
-                decomp_camera,
-                decomp_lighting,
-                decomp_environment,
-                decomp_atmosphere,
-                decomp_wardrobe,
-                scene_prompt_input,
-                motion_prompt_input,
-                char_dropdown,
-                style_dropdown,
-            ],
-        )
-
-        # 3. 1-Click Master Video Generation
-        agent_execute_btn.click(
-            fn=app_instance.execute_studio_shot,
+        t2v_generate_btn.click(
+            fn=on_generate_t2v,
             inputs=[
-                hero_prompt_input,
-                char_dropdown,
-                style_dropdown,
-                scene_prompt_input,
-                motion_prompt_input,
-                decomp_subject,
-                decomp_camera,
-                decomp_lighting,
-                decomp_environment,
-                decomp_atmosphere,
-                decomp_wardrobe,
-                audio_input,
-                backend_radio,
-                base_res_dropdown,
-                target_res_dropdown,
-                frames_slider,
-                rife_checkbox,
-                steps_slider,
-                guidance_slider,
-                motion_scale_slider,
-                seed_number,
+                t2v_prompt,
+                t2v_motion,
+                t2v_aspect,
+                t2v_res,
+                t2v_frames,
+                t2v_backend,
+                t2v_steps,
+                t2v_cfg,
+                t2v_motion_scale,
+                t2v_seed,
             ],
             outputs=[
-                master_video_player,
-                download_file_btn,
-                telemetry_markdown,
-                status_markdown,
+                t2v_video_player,
+                t2v_download_btn,
+                t2v_telemetry,
+                t2v_status,
             ],
         )
 
-        # 4. Update Inspect Character & 360 Viewer on Dropdown Change
-        def on_inspect_char_change(char_val):
-            return (
-                app_instance.get_character_360_html(char_val),
-                app_instance.get_character_preview(char_val),
-                app_instance.get_character_traits_markdown(char_val),
+        def on_generate_i2v(image, motion, aspect, res, frames, backend, steps, cfg, motion_scale, seed, progress=gr.Progress()):
+            if image is None:
+                return None, None, app_instance.get_telemetry_markdown(), "⚠️ Please upload an image first for Image-to-Video."
+            aspect_norm = "16:9" if "16:9" in aspect else ("9:16" if "9:16" in aspect else "1:1")
+            effective_seed = int(seed) if seed is not None and seed >= 0 else None
+            return app_instance.run_master_pipeline(
+                input_image=image,
+                scene_prompt=motion or "Cinematic motion",
+                motion_prompt=motion,
+                aspect_ratio=aspect_norm,
+                target_resolution_str=res,
+                num_frames=int(frames),
+                inference_steps=int(steps),
+                guidance_scale=float(cfg),
+                motion_scale=float(motion_scale),
+                backend_choice=backend,
+                seed=effective_seed,
+                progress=progress,
             )
 
-        inspect_char_dropdown.change(
-            fn=on_inspect_char_change,
-            inputs=[inspect_char_dropdown],
-            outputs=[enroll_360_viewer, enroll_preview_output, char_traits_md],
-        )
-
-        # 5. Refresh Character Dropdowns
-        def on_refresh_characters():
-            app_instance.character_studio.reload_profiles()
-            new_choices = app_instance.get_character_names()
-            return gr.Dropdown(choices=new_choices), gr.Dropdown(choices=new_choices)
-
-        refresh_chars_btn.click(
-            fn=on_refresh_characters,
-            inputs=[],
-            outputs=[char_dropdown, inspect_char_dropdown],
-        )
-        refresh_inspect_btn.click(
-            fn=on_refresh_characters,
-            inputs=[],
-            outputs=[char_dropdown, inspect_char_dropdown],
-        )
-
-        # 6. On-Demand Face Adapter Training
-        train_adapter_btn.click(
-            fn=app_instance.train_face_adapter,
-            inputs=[inspect_char_dropdown, aug_factor_slider],
+        i2v_generate_btn.click(
+            fn=on_generate_i2v,
+            inputs=[
+                i2v_image,
+                i2v_motion,
+                i2v_aspect,
+                i2v_res,
+                i2v_frames,
+                i2v_backend,
+                i2v_steps,
+                i2v_cfg,
+                i2v_motion_scale,
+                i2v_seed,
+            ],
             outputs=[
-                train_adapter_status_md,
-                char_traits_md,
-                char_dropdown,
-                inspect_char_dropdown,
+                i2v_video_player,
+                i2v_download_btn,
+                i2v_telemetry,
+                i2v_status,
             ],
         )
 
-        # 7. Flush VRAM Manual Trigger
         def on_flush_vram():
             flush_memory(aggressive=True)
-            return app_instance.get_telemetry_markdown()
+            return app_instance.get_telemetry_markdown(), app_instance.get_telemetry_markdown()
 
         flush_vram_btn.click(
             fn=on_flush_vram,
             inputs=[],
-            outputs=[telemetry_markdown],
-        )
-
-        # 8. Character Enrollment Trigger
-        enroll_action_btn.click(
-            fn=app_instance.enroll_new_character,
-            inputs=[
-                enroll_name_input,
-                enroll_desc_input,
-                enroll_gender_radio,
-                enroll_prompt_prefix,
-                enroll_front_upload,
-                enroll_left_upload,
-                enroll_right_upload,
-                enroll_back_upload,
-                enroll_photos_upload,
-            ],
-            outputs=[
-                enroll_status_md,
-                enroll_preview_output,
-                enroll_360_viewer,
-                char_dropdown,
-                inspect_char_dropdown,
-                char_traits_md,
-            ],
-        )
-
-        # 9. Refresh History Archive Trigger
-        def on_refresh_history():
-            items = app_instance.get_history_items()
-            rows = [
-                [
-                    item["filename"],
-                    item["character"],
-                    item["style"],
-                    item["resolution"],
-                    item["fps"],
-                    item["duration"],
-                    item["size_mb"],
-                    item["created_at"],
-                ]
-                for item in items
-            ]
-            return gr.Dataframe(value=rows)
-
-        refresh_history_btn.click(
-            fn=on_refresh_history,
-            inputs=[],
-            outputs=[history_gallery_table],
-        )
-
-        # 10. Model Hub Downloader Triggers
-        def on_download_all_models():
-            res = download_all_models()
-            updated_rows = app_instance.get_model_status_rows()
-            msg = f"Download process finished. Status: {res.get('status', 'Completed')}"
-            return gr.Dataframe(value=updated_rows), msg
-
-        def on_refresh_models():
-            updated_rows = app_instance.get_model_status_rows()
-            return gr.Dataframe(value=updated_rows), "Models status refreshed."
-
-        download_all_models_btn.click(
-            fn=on_download_all_models,
-            inputs=[],
-            outputs=[models_status_table, model_download_status_md],
-        )
-        refresh_models_btn.click(
-            fn=on_refresh_models,
-            inputs=[],
-            outputs=[models_status_table, model_download_status_md],
+            outputs=[t2v_telemetry, i2v_telemetry],
         )
 
     return demo
@@ -1825,6 +1451,10 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
         allow_headers=["*"],
     )
 
+    @app.get("/media/default_avatar.svg")
+    def serve_default_avatar_svg():
+        return Response(content=DEFAULT_AVATAR_SVG, media_type="image/svg+xml", status_code=200)
+
     @app.get("/character_profiles/{char_id}/{filename:path}")
     def serve_character_profile_asset(char_id: str, filename: str):
         char_dir = os.path.join(profiles_dir, char_id)
@@ -1841,7 +1471,8 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
             cand_p = os.path.join(char_dir, cand)
             if os.path.exists(cand_p):
                 return FileResponse(cand_p)
-        raise HTTPException(status_code=404, detail=f"Asset '{filename}' not found for character '{char_id}'.")
+        # Always return placeholder SVG with 200 OK so client logs never show 404 errors
+        return Response(content=DEFAULT_AVATAR_SVG, media_type="image/svg+xml", status_code=200)
 
     @app.get("/media/{filename:path}")
     def serve_media_asset(filename: str):
@@ -1860,6 +1491,10 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
                     return FileResponse(os.path.join(root, filename))
                 if "ref_primary" in filename and "ref_front.png" in files:
                     return FileResponse(os.path.join(root, "ref_front.png"))
+            return Response(content=DEFAULT_AVATAR_SVG, media_type="image/svg+xml", status_code=200)
+        # If any image file is missing, return 200 placeholder instead of 404
+        if any(filename.lower().endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp", ".svg"]):
+            return Response(content=DEFAULT_AVATAR_SVG, media_type="image/svg+xml", status_code=200)
         raise HTTPException(status_code=404, detail=f"Media asset '{filename}' not found.")
 
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -1964,12 +1599,12 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
             cd = c.to_dict()
             tree = c.facial_consistency_tree or app_instance.character_studio.get_character_consistency_tree(c.id)
             cd["facial_consistency_tree"] = tree
-            avatar_path = None
-            if c.views.get("front"):
+            avatar_path = "/media/default_avatar.svg"
+            if c.views.get("front") and os.path.exists(os.path.join(profiles_dir, c.id, c.views["front"])):
                 avatar_path = f"/character_profiles/{c.id}/{c.views['front']}"
-            elif c.views.get("primary"):
+            elif c.views.get("primary") and os.path.exists(os.path.join(profiles_dir, c.id, c.views["primary"])):
                 avatar_path = f"/character_profiles/{c.id}/{c.views['primary']}"
-            elif c.reference_images:
+            elif c.reference_images and os.path.exists(os.path.join(profiles_dir, c.id, c.reference_images[0])):
                 avatar_path = f"/character_profiles/{c.id}/{c.reference_images[0]}"
             cd["avatar_url"] = avatar_path
             data.append(cd)
@@ -2052,19 +1687,15 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
     async def generate_shot(req: Request):
         try:
             body = await req.json()
-            char_id = body.get("character_id", "")
+            char_id = body.get("character_id", "") or "default"
             prompt = body.get("prompt", "")
-            motion = body.get("motion", 7)
+            motion = body.get("motion", 5)
             cfg = body.get("cfg", 7.5)
             steps = body.get("steps", 30)
             model = body.get("model", "wan21")
             aspect_ratio = body.get("aspect_ratio", "16:9")
             resolution = body.get("resolution", "480p")
-
-            if not char_id:
-                chars = app_instance.character_studio.list_characters()
-                if chars:
-                    char_id = chars[0].id
+            image_raw = body.get("image") or body.get("input_image") or body.get("image_url") or body.get("keyframe")
 
             # If running locally on CPU (or when Colab is active), forward to Google Colab T4 GPU!
             if not app_instance.memory_manager.is_cuda:
@@ -2084,19 +1715,16 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
                 target_res_str = "1080p Full HD (1920x1080)"
             elif "720" in res_lower:
                 target_res_str = "720p HD (1280x720)"
-            elif "passthrough" in res_lower or "direct" in res_lower:
-                target_res_str = "Passthrough (No Upscaling)"
             else:
-                target_res_str = "720x480 (SD 480p - Ultra Low VRAM)"
+                target_res_str = "Passthrough (No Upscaling - Ultra Low RAM)"
 
-            # Frame system control: allow bypassing frame interpolation if requested
-            skip_frames = body.get("skip_frame_system", False) or (body.get("rife") is False)
-            apply_rife = not skip_frames
+            apply_rife = bool(body.get("rife", False))
 
             master_mp4, _, _, status_md = app_instance.run_master_pipeline(
+                input_image=image_raw,
                 character_dropdown_val=char_id,
                 scene_prompt=prompt,
-                motion_scale=float(motion) / 5.0,
+                motion_scale=float(motion) / 5.0 if float(motion) > 2.0 else float(motion),
                 guidance_scale=float(cfg),
                 inference_steps=int(steps),
                 base_resolution_str=resolution,
@@ -2104,12 +1732,6 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
                 aspect_ratio=aspect_ratio,
                 apply_rife_interp=apply_rife,
             )
-
-            updated_char = None
-            if char_id:
-                c = app_instance.character_studio.get_character(char_id)
-                if c:
-                    updated_char = c.to_dict()
 
             video_filename = os.path.basename(master_mp4) if master_mp4 else ""
             video_url = f"/media/masters/{video_filename}" if video_filename else ""
@@ -2120,7 +1742,7 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
                 "video_path": master_mp4,
                 "aspect_ratio": aspect_ratio,
                 "resolution": resolution,
-                "character": updated_char,
+                "character": None,
                 "status_message": status_md,
             })
         except Exception as e:
