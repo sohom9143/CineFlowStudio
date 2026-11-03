@@ -534,7 +534,12 @@ class CharacterStudio:
         self.styles_path = styles_path
         self.memory_manager = memory_manager or VRAMManager.get_instance()
         self.gemini_agent = gemini_agent or CharacterGeminiAgent()
-        self.db = character_database or get_character_database()
+        if character_database is not None:
+            self.db = character_database
+        elif profiles_dir != "character_profiles":
+            self.db = CharacterDatabase(storage_dir=os.path.join(profiles_dir, "_db"), profiles_dir=profiles_dir)
+        else:
+            self.db = get_character_database()
 
         self._profiles_cache: Dict[str, CharacterProfile] = {}
         self._embeddings_cache: Dict[str, np.ndarray] = {}

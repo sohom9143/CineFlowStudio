@@ -1498,8 +1498,8 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
         raise HTTPException(status_code=404, detail=f"Media asset '{filename}' not found.")
 
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
-    app.mount("/media", StaticFiles(directory=outputs_dir), name="media")
-    app.mount("/character_profiles", StaticFiles(directory=profiles_dir), name="character_profiles")
+    # Note: /media and /character_profiles are routed via serve_media_asset and serve_character_profile_asset
+    # which gracefully serve existing files or return 200 OK placeholder SVGs to prevent 404 errors.
 
     @app.get("/")
     def serve_index():
