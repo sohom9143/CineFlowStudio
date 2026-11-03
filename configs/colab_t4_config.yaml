@@ -41,7 +41,7 @@ paths:
 character_engine:
   model_id: "InstantX/SDXL-InstantID"
   insightface_app: "buffalo_l"
-  default_character: "dev"
+  default_character: "siddhartha"
   embedding_dim: 512
   face_detection_threshold: 0.65
   width: 720
@@ -52,7 +52,7 @@ video_engine:
   primary_backend: "wan2.1"              # "wan2.1" (primary), "ltx-video" (fallback), "mock"
   wan_model_id: "Wan-AI/Wan2.1-I2V-1.3B-480P"
   ltx_model_id: "Lightricks/LTX-Video"
-  default_frames: 81                     # 81 frames @ 24fps = 3.375s (DiT temporal formula 4k+1 / 8k+1)
+  default_frames: 49                     # 49 frames @ 24fps = 2.04s (Standard DiT low-RAM formula 4k+1)
   default_fps: 24
   default_motion_scale: 1.0
   motion_bucket_id: 127
@@ -77,18 +77,18 @@ lipsync_engine:
 
 post_processing:
   upscaler_model: "RealESRGAN_x4plus"
-  enable_upscale: true
-  default_resolution: "1080p"            # "720p", "1080p", "4k"
-  target_resolution: "1080p"
+  enable_upscale: false                  # Disabled by default for Ultra-Low RAM & instant render
+  default_resolution: "passthrough"      # Native SD/HD resolution (Zero RAM spike)
+  target_resolution: "passthrough"
   chunk_batch_size: 4                    # Frames per upscaling chunk to prevent VRAM spikes (<3.8 GB)
   chunk_size: 4
   tile_size: 512                         # Spatial tiling size for large frames
   tile_pad: 10
   half_precision: true                   # FP16 execution on CUDA
-  rife_enabled: true
-  enable_interpolation: true             # 24fps -> 60fps interpolation
-  rife_target_fps: 60
-  target_fps: 60
+  rife_enabled: false                    # Disabled by default for low RAM and fast render
+  enable_interpolation: false            # Native 24fps cinematic motion
+  rife_target_fps: 24
+  target_fps: 24
   ffmpeg:
     codec: "libx264"
     video_codec: "libx264"

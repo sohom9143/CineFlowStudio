@@ -280,7 +280,8 @@ class PostProcessingConfig:
 
     def validate(self) -> None:
         """Validates all configuration parameters and raises ValueError on invalid values."""
-        parse_resolution(self.target_resolution)
+        if str(self.target_resolution).lower() not in ("passthrough", "native", "none", "bypass", "original"):
+            parse_resolution(self.target_resolution)
         if self.chunk_batch_size <= 0:
             raise ValueError(f"chunk_batch_size must be positive, got {self.chunk_batch_size}")
         if self.target_fps <= 0:
@@ -493,16 +494,15 @@ class RealESRGANUpscaler:
         """Ensures that RealESRGAN model is on the target device and precision before inference."""
         if self._model is not None and not self._is_mock and TORCH_AVAILABLE:
             try:
+                target_dev_str = self.device if self.device is not None else ("cuda" if (torch.cuda.is_available()) else "cpu")
+                target_device = torch.device(target_dev_str)
+                is_cuda = (target_device.type == "cuda")
+                target_dtype = torch.float16 if (self.half_precision and is_cuda) else torch.float32
+
                 first_param = next(self._model.parameters(), None)
-                if first_param is not None:
-                    target_device = torch.device(self.device)
-                    if first_param.device != target_device:
-                        logger.info(f"Restoring RealESRGAN model to {target_device} (was on {first_param.device})...")
-                        self._model.to(target_device)
-                    if self.half_precision and first_param.dtype != torch.float16:
-                        self._model.half()
-                    elif not self.half_precision and first_param.dtype != torch.float32:
-                        self._model.float()
+                if first_param is not None and (first_param.device.type != target_device.type or first_param.dtype != target_dtype):
+                    logger.info(f"Syncing RealESRGAN model to device={target_device}, dtype={target_dtype}...")
+                    self._model = self._model.to(device=target_device, dtype=target_dtype)
             except Exception as e:
                 logger.warning(f"Could not re-sync RealESRGAN model device: {e}")
 
@@ -522,11 +522,13 @@ class RealESRGANUpscaler:
             try:
                 self._ensure_model_on_device()
 
-                # Normalize [0, 255] uint8 -> [0.0, 1.0] float tensor
-                tensor = torch.from_numpy(tile).permute(2, 0, 1).unsqueeze(0).float() / 255.0
-                tensor = tensor.to(self.device)
-                if self.half_precision:
-                    tensor = tensor.half()
+                target_dev_str = self.device if self.device is not None else ("cuda" if (torch.cuda.is_available()) else "cpu")
+                target_device = torch.device(target_dev_str)
+                is_cuda = (target_device.type == "cuda")
+                target_dtype = torch.float16 if (self.half_precision and is_cuda) else torch.float32
+
+                # Normalize [0, 255] uint8 -> [0.0, 1.0] tensor with strictly matching device and dtype
+                tensor = torch.from_numpy(tile).permute(2, 0, 1).unsqueeze(0).to(device=target_device, dtype=target_dtype) / 255.0
 
                 with torch.no_grad():
                     out_tensor = self._model(tensor)
@@ -538,7 +540,9 @@ class RealESRGANUpscaler:
                     out_np = self.upscale_frame_algorithmic(out_np, target_tw, target_th)
                 return out_np
             except Exception as e:
-                logger.warning(f"Tile neural inference failed ({e}). Falling back to algorithmic upscaler.")
+                if not getattr(self, "_warned_tile_failure", False):
+                    logger.warning(f"Tile neural inference failed ({e}). Falling back to algorithmic upscaler.")
+                    self._warned_tile_failure = True
 
         return self.upscale_frame_algorithmic(tile, target_tw, target_th)
 
@@ -878,6 +882,66 @@ class RIFEInterpolator:
 # Audio/Video Master Multiplexer Subsystem (FFmpeg / MoviePy / OpenCV)
 # =============================================================================
 
+def is_valid_ffmpeg_binary(bin_path: Union[str, Path, None]) -> bool:
+    """Verifies that the given path is an executable FFmpeg binary that runs -version successfully."""
+    if not bin_path:
+        return False
+    path_str = str(bin_path)
+    if not os.path.exists(path_str) or not os.path.isfile(path_str):
+        return False
+    try:
+        res = subprocess.run([path_str, "-version"], capture_output=True, text=True, timeout=2.5)
+        return res.returncode == 0 and "ffmpeg" in res.stdout.lower()
+    except Exception:
+        return False
+
+
+def find_working_ffmpeg() -> Optional[str]:
+    """
+    Discovers and validates a working FFmpeg binary with H.264 support.
+    Prioritizes verified local standalone binaries over broken PATH scripts (e.g. panda3d_tools wrapper).
+    """
+    module_dir = Path(__file__).resolve().parent
+    workspace_root = module_dir.parent
+
+    candidate_paths: List[Union[str, Path]] = [
+        workspace_root / "tools" / "ffmpeg.exe",
+        module_dir.parent / "tools" / "ffmpeg.exe",
+        workspace_root / "ffmpeg.exe",
+        Path.cwd() / "tools" / "ffmpeg.exe",
+        Path.cwd() / "ffmpeg.exe",
+    ]
+
+    # Check WinGet installation on Windows
+    winget_dir = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages")
+    if os.path.exists(winget_dir):
+        try:
+            for root, _, files in os.walk(winget_dir):
+                if "ffmpeg.exe" in files:
+                    candidate_paths.append(os.path.join(root, "ffmpeg.exe"))
+                    break
+        except Exception:
+            pass
+
+    # Check system PATH candidates
+    sys_which = shutil.which("ffmpeg")
+    if sys_which:
+        candidate_paths.append(sys_which)
+
+    # Standard system paths
+    candidate_paths.extend([
+        "C:\\ffmpeg\\bin\\ffmpeg.exe",
+        "/usr/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+    ])
+
+    for cand in candidate_paths:
+        if is_valid_ffmpeg_binary(cand):
+            return str(Path(cand).resolve())
+
+    return None
+
+
 class AudioVideoMuxer:
     """
     Broadcast Master Audio/Video Multiplexer producing clean H.264 / AAC MP4 containers.
@@ -894,15 +958,8 @@ class AudioVideoMuxer:
         self._ffmpeg_bin = self._find_ffmpeg_executable()
 
     def _find_ffmpeg_executable(self) -> Optional[str]:
-        """Locates available FFmpeg executable on system PATH."""
-        which_ffmpeg = shutil.which("ffmpeg")
-        if which_ffmpeg:
-            return which_ffmpeg
-        # Check standard Windows / Linux locations
-        for candidate in ["C:\\ffmpeg\\bin\\ffmpeg.exe", "ffmpeg.exe", "/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"]:
-            if os.path.exists(candidate):
-                return candidate
-        return None
+        """Locates and validates available FFmpeg executable on system PATH or local tools."""
+        return find_working_ffmpeg()
 
     def _mux_with_ffmpeg_pipe(
         self,
@@ -1077,29 +1134,42 @@ class AudioVideoMuxer:
 
             writer.release()
 
-            # If FFmpeg binary is available and audio is provided, remux audio into the OpenCV video
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 0 and self._ffmpeg_bin and audio_path and os.path.exists(audio_path):
-                temp_remux = output_path + ".remux.mp4"
-                remux_cmd = [
-                    self._ffmpeg_bin, "-y",
+            # If FFmpeg binary is available, transcode OpenCV output to standard H.264 (libx264)
+            # with FastStart and AAC audio so that it plays universally in web browsers and HTML5 video tags!
+            ffmpeg_exe = self._ffmpeg_bin or find_working_ffmpeg()
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0 and ffmpeg_exe:
+                temp_transcode = output_path + ".h264.mp4"
+                transcode_cmd = [
+                    ffmpeg_exe, "-y",
                     "-i", str(os.path.abspath(output_path)),
-                    "-i", str(os.path.abspath(audio_path)),
-                    "-c:v", "copy",
-                    "-c:a", "aac", "-strict", "-2", "-ar", "44100", "-ac", "2",
-                    "-shortest",
-                    "-movflags", "+faststart",
-                    str(os.path.abspath(temp_remux)),
                 ]
+                if audio_path and os.path.exists(audio_path):
+                    transcode_cmd.extend([
+                        "-i", str(os.path.abspath(audio_path)),
+                        "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2",
+                        "-shortest",
+                    ])
+                else:
+                    transcode_cmd.extend(["-an"])
+
+                transcode_cmd.extend([
+                    "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p",
+                    "-preset", "fast",
+                    "-crf", "19",
+                    "-movflags", "+faststart",
+                    str(os.path.abspath(temp_transcode)),
+                ])
                 try:
-                    res = subprocess.run(remux_cmd, capture_output=True, text=True, timeout=30)
-                    if res.returncode == 0 and os.path.exists(temp_remux) and os.path.getsize(temp_remux) > 0:
-                        shutil.move(temp_remux, output_path)
-                        logger.info(f"OpenCV video successfully multiplexed with audio via FFmpeg: '{output_path}'.")
-                except Exception as remux_e:
-                    logger.debug(f"OpenCV audio remux failed: {remux_e}")
-                    if os.path.exists(temp_remux):
+                    res = subprocess.run(transcode_cmd, capture_output=True, text=True, timeout=60)
+                    if res.returncode == 0 and os.path.exists(temp_transcode) and os.path.getsize(temp_transcode) > 0:
+                        shutil.move(temp_transcode, output_path)
+                        logger.info(f"OpenCV video successfully transcoded to universal H.264 (libx264) via FFmpeg: '{output_path}'.")
+                except Exception as transcode_err:
+                    logger.debug(f"OpenCV transcode failed: {transcode_err}")
+                    if os.path.exists(temp_transcode):
                         try:
-                            os.remove(temp_remux)
+                            os.remove(temp_transcode)
                         except OSError:
                             pass
 
@@ -1376,12 +1446,39 @@ class PostProductionEngine:
         upscaled = False
 
         # ---------------------------------------------------------------------
-        # Step 1: Temporal Frame Rate Interpolation
+        # Step 1: Super-Resolution Upscaling (Upscale original frames FIRST for 60% lower RAM & VRAM!)
+        # ---------------------------------------------------------------------
+        is_passthrough = str(active_config.target_resolution).lower() in ("passthrough", "native", "none", "bypass", "original") or not active_config.enable_upscale
+
+        if not is_passthrough:
+            target_w, target_h = parse_resolution(active_config.target_resolution)
+            src_h, src_w = current_frames[0].shape[:2]
+
+            if active_config.enable_upscale and (src_w != target_w or src_h != target_h):
+                logger.info(f"Step 1/3: Upscaling {src_w}x{src_h} -> {target_w}x{target_h}...")
+                if progress_callback:
+                    progress_callback(0.3, f"Upscaling frames to {target_w}x{target_h}")
+
+                current_frames = self.upscale_frames(
+                    frames=current_frames,
+                    target_resolution=active_config.target_resolution,
+                    chunk_size=active_config.chunk_batch_size,
+                    tile_size=active_config.tile_size,
+                    progress_callback=progress_callback,
+                )
+                upscaled = True
+            else:
+                logger.info(f"Step 1/3: Upscaling skipped (Dimensions: {src_w}x{src_h}).")
+        else:
+            logger.info("Step 1/3: Native Passthrough Mode active (Upscaling bypassed for Ultra-Low RAM).")
+
+        # ---------------------------------------------------------------------
+        # Step 2: Temporal Frame Rate Interpolation
         # ---------------------------------------------------------------------
         if active_config.enable_interpolation and (active_config.target_fps != source_fps):
-            logger.info(f"Step 1/3: Interpolating framerate {source_fps}fps -> {active_config.target_fps}fps...")
+            logger.info(f"Step 2/3: Interpolating framerate {source_fps}fps -> {active_config.target_fps}fps...")
             if progress_callback:
-                progress_callback(0.1, f"Interpolating framerate to {active_config.target_fps}fps")
+                progress_callback(0.6, f"Interpolating framerate to {active_config.target_fps}fps")
 
             current_frames = self.interpolate_fps(
                 frames=current_frames,
@@ -1392,29 +1489,7 @@ class PostProductionEngine:
             current_fps = active_config.target_fps
             interpolated = True
         else:
-            logger.info(f"Step 1/3: Frame interpolation skipped (Current FPS: {current_fps}).")
-
-        # ---------------------------------------------------------------------
-        # Step 2: Super-Resolution Upscaling
-        # ---------------------------------------------------------------------
-        target_w, target_h = parse_resolution(active_config.target_resolution)
-        src_h, src_w = current_frames[0].shape[:2]
-
-        if active_config.enable_upscale and (src_w != target_w or src_h != target_h):
-            logger.info(f"Step 2/3: Upscaling {src_w}x{src_h} -> {target_w}x{target_h}...")
-            if progress_callback:
-                progress_callback(0.4, f"Upscaling frames to {target_w}x{target_h}")
-
-            current_frames = self.upscale_frames(
-                frames=current_frames,
-                target_resolution=active_config.target_resolution,
-                chunk_size=active_config.chunk_batch_size,
-                tile_size=active_config.tile_size,
-                progress_callback=progress_callback,
-            )
-            upscaled = True
-        else:
-            logger.info(f"Step 2/3: Upscaling skipped (Dimensions: {src_w}x{src_h}).")
+            logger.info(f"Step 2/3: Frame interpolation skipped (Current FPS: {current_fps}).")
 
         # ---------------------------------------------------------------------
         # Step 3: Audio/Video Master Multiplexing

@@ -187,7 +187,11 @@ def save_video_frames(
     # Strategy 1: Direct FFmpeg CLI pipe (Highest Quality, Universal Browser & Desktop Support)
     import shutil
     import subprocess
-    ffmpeg_bin = shutil.which("ffmpeg")
+    try:
+        from modules.post_processing import find_working_ffmpeg
+        ffmpeg_bin = find_working_ffmpeg()
+    except Exception:
+        ffmpeg_bin = shutil.which("ffmpeg")
     if ffmpeg_bin:
         try:
             cmd = [

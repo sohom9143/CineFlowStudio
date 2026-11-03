@@ -34,6 +34,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "True")
+
 import numpy as np
 import yaml
 from PIL import Image
@@ -193,13 +196,21 @@ class CineFlowApp:
 
     def resolve_character_id(self, selected_char: str) -> str:
         """Resolves dropdown selection string to canonical character ID."""
+        chars = self.character_studio.list_characters()
+        known_ids = {c.id: c.id for c in chars}
         if not selected_char:
-            chars = self.character_studio.list_characters()
             return chars[0].id if chars else ""
         if "(" in selected_char and ")" in selected_char:
-            char_id = selected_char.split("(")[-1].replace(")", "").strip()
+            char_id = selected_char.split("(")[-1].replace(")", "").strip().lower()
+        else:
+            char_id = selected_char.strip().lower()
+
+        if char_id in known_ids:
             return char_id
-        return selected_char.strip().lower()
+        for cid in known_ids:
+            if cid in char_id or char_id in cid:
+                return cid
+        return chars[0].id if chars else char_id
 
     def get_character_preview(self, selected_char: str) -> Optional[Image.Image]:
         """Returns PIL preview portrait for selected character."""
@@ -604,9 +615,9 @@ class CineFlowApp:
         audio_file_path: Optional[str] = None,
         backend_choice: Optional[str] = None,
         base_resolution_str: str = "720x480 (SD 480p - Ultra Low VRAM)",
-        target_resolution_str: str = "1080p Full HD (1920x1080)",
+        target_resolution_str: str = "Passthrough (No Upscaling - Ultra Low RAM)",
         num_frames: int = 49,
-        apply_rife_interp: bool = True,
+        apply_rife_interp: bool = False,
         inference_steps: int = 30,
         guidance_scale: float = 7.5,
         motion_scale: float = 1.0,
@@ -649,16 +660,20 @@ class CineFlowApp:
         base_w, base_h = resolve_dimensions(resolution=base_resolution_str, aspect_ratio=aspect_ratio_norm)
 
         target_res_map = {
+            "Passthrough (No Upscaling - Ultra Low RAM)": "passthrough",
+            "Passthrough (No Upscaling)": "passthrough",
+            "Passthrough (Native Resolution)": "passthrough",
+            "passthrough": "passthrough",
+            "native": "passthrough",
             "1080p Full HD (1920x1080)": "1080p",
             "4K Ultra HD (3840x2160)": "4k",
             "720p HD (1280x720)": "720p",
-            "Passthrough (No Upscaling)": "passthrough",
             "1080p (FHD)": "1080p",
             "4k": "4k",
             "1080p": "1080p",
             "720p": "720p",
         }
-        target_res_norm = target_res_map.get(target_resolution_str, "1080p")
+        target_res_norm = target_res_map.get(target_resolution_str, "passthrough")
 
         logger.info(
             f"Starting Master Render: Character='{char_id}' | Style='{style_id}' | "
@@ -740,10 +755,10 @@ class CineFlowApp:
             master_output_path = os.path.join(self.masters_dir, master_filename)
             final_fps = 60 if rife_raw else 24
 
-            is_passthrough = (target_res_norm == "passthrough")
+            is_passthrough = (target_res_norm in ("passthrough", "native"))
             post_cfg = PostProcessingConfig(
                 enable_upscale=not is_passthrough,
-                target_resolution="1080p" if is_passthrough else target_res_norm,
+                target_resolution="passthrough" if is_passthrough else target_res_norm,
                 chunk_batch_size=4,
                 enable_interpolation=rife_raw,
                 target_fps=final_fps,
@@ -988,9 +1003,9 @@ class CineFlowApp:
         audio_file_path: Optional[str] = None,
         backend_choice: Optional[str] = None,
         base_resolution_str: str = "720x480 (SD 480p - Ultra Low VRAM)",
-        target_resolution_str: str = "1080p Full HD (1920x1080)",
+        target_resolution_str: str = "Passthrough (No Upscaling - Ultra Low RAM)",
         num_frames: int = 49,
-        apply_rife_interp: bool = True,
+        apply_rife_interp: bool = False,
         inference_steps: int = 30,
         guidance_scale: float = 7.5,
         motion_scale: float = 1.0,
@@ -1244,12 +1259,12 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                             target_res_dropdown = gr.Dropdown(
                                 label="Super-Resolution Target",
                                 choices=[
+                                    "Passthrough (No Upscaling - Ultra Low RAM)",
+                                    "720p HD (1280x720)",
                                     "1080p Full HD (1920x1080)",
                                     "4K Ultra HD (3840x2160)",
-                                    "720p HD (1280x720)",
-                                    "Passthrough (No Upscaling)",
                                 ],
-                                value="1080p Full HD (1920x1080)",
+                                value="Passthrough (No Upscaling - Ultra Low RAM)",
                             )
                             frames_slider = gr.Slider(
                                 label="Frame Count (4k+1 Rule for DiT)",
@@ -1258,7 +1273,7 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                                 step=4,
                                 value=49,
                             )
-                            rife_checkbox = gr.Checkbox(label="RIFE 60fps Interpolation", value=True)
+                            rife_checkbox = gr.Checkbox(label="RIFE 60fps Interpolation", value=False)
 
                         with gr.Row():
                             steps_slider = gr.Slider(label="Inference Steps", minimum=15, maximum=50, step=1, value=30)
@@ -2440,14 +2455,19 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
             "ast_delta_active": True,
         })
 
-    # Mount Gradio Blocks at /gradio
+    # Mount Gradio Blocks at /gradio safely without blocking test runner lifespan
     if GRADIO_AVAILABLE and gr is not None:
-        try:
-            demo = build_gradio_ui(app_instance)
-            gr.mount_gradio_app(app, demo, path="/gradio")
-            logger.info("Mounted Gradio WebUI at '/gradio'")
-        except Exception as e:
-            logger.warning(f"Could not mount Gradio on FastAPI app: {e}")
+        mount_gradio_flag = (
+            not os.getenv("PYTEST_CURRENT_TEST")
+            and os.getenv("CINEFLOW_MOUNT_GRADIO", "1").strip().lower() not in ("0", "false", "no")
+        )
+        if mount_gradio_flag:
+            try:
+                demo = build_gradio_ui(app_instance)
+                gr.mount_gradio_app(app, demo, path="/gradio")
+                logger.info("Mounted Gradio WebUI at '/gradio'")
+            except Exception as e:
+                logger.warning(f"Could not mount Gradio on FastAPI app: {e}")
 
     return app
 
