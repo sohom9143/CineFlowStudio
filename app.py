@@ -854,7 +854,16 @@ class CineFlowApp:
             if progress:
                 progress(1.0, desc="Render Complete!")
 
-            target_w, target_h = parse_resolution(target_res_norm)
+            if target_res_norm in ("passthrough", "native"):
+                if synced_frames and len(synced_frames) > 0 and hasattr(synced_frames[0], "shape"):
+                    target_w, target_h = int(synced_frames[0].shape[1]), int(synced_frames[0].shape[0])
+                else:
+                    target_w, target_h = base_w, base_h
+            else:
+                try:
+                    target_w, target_h = parse_resolution(target_res_norm)
+                except Exception:
+                    target_w, target_h = (base_w, base_h)
             status_markdown = (
                 f"### 🎉 Master Shot Rendered Successfully!\n"
                 f"- **Output File**: `{os.path.basename(rendered_master_path)}`\n"
@@ -1503,13 +1512,17 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
 
     @app.get("/")
     def serve_index():
+        return RedirectResponse(url="/gradio")
+
+    @app.get("/nle")
+    def serve_nle():
         index_file = os.path.join(static_dir, "index.html")
         if os.path.exists(index_file):
             return FileResponse(index_file)
         code_file = os.path.join(workspace_dir, "code.html")
         if os.path.exists(code_file):
             return FileResponse(code_file)
-        return JSONResponse({"message": "CineFlow Studio active. Open /gradio for Gradio UI."})
+        return RedirectResponse(url="/gradio")
 
     @app.get("/code.html")
     def serve_code_html():
@@ -1720,7 +1733,9 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
 
             apply_rife = bool(body.get("rife", False))
 
-            master_mp4, _, _, status_md = app_instance.run_master_pipeline(
+            from starlette.concurrency import run_in_threadpool
+            master_mp4, _, _, status_md = await run_in_threadpool(
+                app_instance.run_master_pipeline,
                 input_image=image_raw,
                 character_dropdown_val=char_id,
                 scene_prompt=prompt,
@@ -1733,8 +1748,15 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
                 apply_rife_interp=apply_rife,
             )
 
-            video_filename = os.path.basename(master_mp4) if master_mp4 else ""
-            video_url = f"/media/masters/{video_filename}" if video_filename else ""
+            if not master_mp4:
+                return JSONResponse({
+                    "status": "error",
+                    "error": status_md or "Master pipeline failed to produce video.",
+                    "status_message": status_md,
+                }, status_code=500)
+
+            video_filename = os.path.basename(master_mp4)
+            video_url = f"/media/masters/{video_filename}"
 
             return JSONResponse({
                 "status": "success",

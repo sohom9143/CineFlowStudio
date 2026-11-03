@@ -135,6 +135,8 @@ def parse_resolution(resolution: Union[str, Tuple[int, int], List[int]]) -> Tupl
         res_str = resolution.strip().lower()
         if res_str in RESOLUTION_PRESETS:
             w, h = RESOLUTION_PRESETS[res_str]
+        elif res_str in ("passthrough", "native", "none", "bypass", "original", ""):
+            w, h = (1280, 720)
         else:
             # Handle "1920x1080", "1920*1080", "1920,1080"
             clean_str = res_str.replace("x", " ").replace("X", " ").replace("*", " ").replace(",", " ")
