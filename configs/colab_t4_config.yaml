@@ -49,7 +49,7 @@ character_engine:
   default_seed: 42
 
 video_engine:
-  primary_backend: "wan2.1"              # "wan2.1" (primary), "ltx-video" (fallback), "mock"
+  primary_backend: "ltx-video"           # "ltx-video" (T4-friendly), "wan2.1", "mock"
   wan_model_id: "Wan-AI/Wan2.1-I2V-1.3B-480P"
   ltx_model_id: "Lightricks/LTX-Video"
   default_frames: 49                     # 49 frames @ 24fps = 2.04s (Standard DiT low-RAM formula 4k+1)

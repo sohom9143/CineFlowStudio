@@ -521,6 +521,7 @@ class LTXVideoBackend(BaseVideoBackend):
             torch_dtype = torch.bfloat16
 
         pipeline = None
+        last_error: Optional[Exception] = None
         try:
             pipeline_cls = getattr(diffusers, "LTXImageToVideoPipeline", None) or \
                            getattr(diffusers, "LTXPipeline", None) or \
@@ -530,11 +531,17 @@ class LTXVideoBackend(BaseVideoBackend):
                 pipeline = pipeline_cls.from_pretrained(
                     self.MODEL_ID,
                     torch_dtype=torch_dtype,
+                    low_cpu_mem_usage=True,
                 )
         except Exception as e:
+            last_error = e
             logger.warning(f"Direct LTX-Video diffusers loading encountered: {e}")
 
         if pipeline is None:
+            if self.memory_manager.is_cuda:
+                raise RuntimeError(
+                    f"Failed to load LTX-Video model '{self.MODEL_ID}' on GPU: {last_error or 'Pipeline class not found in diffusers'}"
+                )
             pipeline = "ltx_video_mock_pipeline"
 
         if hasattr(pipeline, "enable_model_cpu_offload"):
@@ -596,8 +603,12 @@ class LTXVideoBackend(BaseVideoBackend):
                     rgb_frames.append(arr)
                 return rgb_frames
             except Exception as e:
+                if self.memory_manager.is_cuda:
+                    raise RuntimeError(f"LTX-Video GPU inference failed: {e}") from e
                 logger.warning(f"LTX-Video inference encountered error ({e}); cascading to fallback.")
 
+        if self.memory_manager.is_cuda:
+            raise RuntimeError("LTX-Video weights are not active on GPU; cannot run real AI video generation.")
         logger.info("LTX-Video weights not active in environment; executing deterministic fallback.")
         mock_backend = MockVideoBackend(self.memory_manager)
         return mock_backend.generate(image, motion_prompt, config)

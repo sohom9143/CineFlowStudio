@@ -1211,8 +1211,8 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                         with gr.Row():
                             t2v_backend = gr.Radio(
                                 label="Video Backend",
-                                choices=["Wan 2.1 FP8 (Primary DiT)", "LTX-Video (Fast DiT)", "Procedural Mock (CPU / Test)"],
-                                value="Wan 2.1 FP8 (Primary DiT)",
+                                choices=["LTX-Video (Fast DiT)", "Wan 2.1 FP8 (Primary DiT)", "Procedural Mock (CPU / Test)"],
+                                value="LTX-Video (Fast DiT)",
                             )
                         with gr.Row():
                             t2v_steps = gr.Slider(label="Inference Steps", minimum=15, maximum=50, step=1, value=30)
@@ -1277,8 +1277,8 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                         with gr.Row():
                             i2v_backend = gr.Radio(
                                 label="Video Backend",
-                                choices=["Wan 2.1 FP8 (Primary DiT)", "LTX-Video (Fast DiT)", "Procedural Mock (CPU / Test)"],
-                                value="Wan 2.1 FP8 (Primary DiT)",
+                                choices=["LTX-Video (Fast DiT)", "Wan 2.1 FP8 (Primary DiT)", "Procedural Mock (CPU / Test)"],
+                                value="LTX-Video (Fast DiT)",
                             )
                         with gr.Row():
                             i2v_steps = gr.Slider(label="Inference Steps", minimum=15, maximum=50, step=1, value=30)
