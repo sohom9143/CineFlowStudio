@@ -625,11 +625,11 @@ class CineFlowApp:
         style_dropdown_val: Optional[str] = None,
         audio_file_path: Optional[str] = None,
         backend_choice: Optional[str] = None,
-        base_resolution_str: str = "720x480 (SD 480p - Ultra Low VRAM)",
+        base_resolution_str: str = "640x384 (Fast T4 Base)",
         target_resolution_str: str = "Passthrough (No Upscaling - Ultra Low RAM)",
-        num_frames: int = 49,
+        num_frames: int = 17,
         apply_rife_interp: bool = False,
-        inference_steps: int = 30,
+        inference_steps: int = 15,
         guidance_scale: float = 7.5,
         motion_scale: float = 1.0,
         seed: Optional[int] = None,
@@ -1243,11 +1243,11 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                         t2v_res = gr.Dropdown(
                             label="Resolution Target",
                             choices=[
-                                "720p HD (1280x720)",
                                 "Passthrough (No Upscaling - Ultra Low RAM)",
+                                "720p HD (1280x720)",
                                 "1080p Full HD (1920x1080)",
                             ],
-                            value="720p HD (1280x720)",
+                            value="Passthrough (No Upscaling - Ultra Low RAM)",
                             scale=1,
                         )
                         t2v_frames = gr.Slider(
@@ -1255,7 +1255,7 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                             minimum=9,
                             maximum=81,
                             step=8,
-                            value=33,
+                            value=17,
                             scale=1,
                         )
 
@@ -1281,7 +1281,7 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                                 value="LTX-Video (Fast DiT)",
                             )
                         with gr.Row():
-                            t2v_steps = gr.Slider(label="Inference Steps", minimum=15, maximum=50, step=1, value=25)
+                            t2v_steps = gr.Slider(label="Inference Steps", minimum=10, maximum=50, step=1, value=15)
                             t2v_cfg = gr.Slider(label="CFG Scale", minimum=1.5, maximum=15.0, step=0.5, value=3.5)
                             t2v_motion_scale = gr.Slider(label="Motion Scale", minimum=0.5, maximum=2.0, step=0.1, value=1.0)
                             t2v_seed = gr.Number(label="Seed (-1 for Random)", value=-1, precision=0)
@@ -1374,7 +1374,7 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                             minimum=9,
                             maximum=81,
                             step=8,
-                            value=33,
+                            value=17,
                             scale=1,
                         )
 
@@ -1405,7 +1405,7 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                             )
                         with gr.Row():
                             pro_lora_scale = gr.Slider(label="LoRA Adapter Weight Scale", minimum=0.1, maximum=1.5, step=0.05, value=0.85)
-                            pro_steps = gr.Slider(label="Inference Steps", minimum=15, maximum=50, step=1, value=25)
+                            pro_steps = gr.Slider(label="Inference Steps", minimum=10, maximum=50, step=1, value=15)
                             pro_cfg = gr.Slider(label="CFG Scale", minimum=1.5, maximum=15.0, step=0.5, value=3.5)
                             pro_motion_scale = gr.Slider(label="Motion Scale", minimum=0.5, maximum=2.0, step=0.1, value=1.0)
                             pro_seed = gr.Number(label="Seed (-1 for Random)", value=-1, precision=0)

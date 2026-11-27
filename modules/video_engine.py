@@ -167,6 +167,10 @@ def resolve_dimensions(resolution: str = "480p", aspect_ratio: str = "16:9") -> 
         if is_square:
             return (768, 768)
         return (720, 1280) if is_portrait else (1280, 720)
+    elif "fast" in res_str or "384" in res_str:
+        if is_square:
+            return (512, 512)
+        return (384, 640) if is_portrait else (640, 384)
     else:  # Default 480p (divisible by 32/16 for DiT & LTX-Video)
         if is_square:
             return (512, 512)
@@ -662,6 +666,12 @@ class LTXVideoBackend(BaseVideoBackend):
                     call_kwargs["negative_prompt"] = config.negative_prompt
                 if "image" in sig.parameters and pil_img is not None:
                     call_kwargs["image"] = pil_img.resize((eff_w, eff_h), Image.Resampling.LANCZOS)
+                if "callback_on_step_end" in sig.parameters:
+                    total_steps = int(config.num_inference_steps)
+                    def _step_cb(_pipe, step_idx, _ts, cb_kwargs):
+                        logger.info(f"[LTX-Video] Denoising Step {step_idx + 1}/{total_steps}...")
+                        return cb_kwargs
+                    call_kwargs["callback_on_step_end"] = _step_cb
 
                 output = active_pipe(**call_kwargs)
 
