@@ -627,9 +627,9 @@ class CineFlowApp:
         backend_choice: Optional[str] = None,
         base_resolution_str: str = "640x384 (Fast T4 Base)",
         target_resolution_str: str = "Passthrough (No Upscaling - Ultra Low RAM)",
-        num_frames: int = 17,
+        num_frames: int = 49,
         apply_rife_interp: bool = False,
-        inference_steps: int = 15,
+        inference_steps: int = 25,
         guidance_scale: float = 7.5,
         motion_scale: float = 1.0,
         seed: Optional[int] = None,
@@ -783,8 +783,21 @@ class CineFlowApp:
             else:
                 combined_motion_prompt = motion_prompt or effective_prompt or "Smooth cinematic motion, natural movement."
 
+            # Enrich short prompts for natural photographic realism & authentic lighting
+            if len(combined_motion_prompt.split()) < 22 and "photorealistic" not in combined_motion_prompt.lower():
+                combined_motion_prompt = (
+                    f"{combined_motion_prompt}. Shot on 35mm cinema camera, natural outdoor daylight, "
+                    "authentic textures, realistic physics and fluid human motion, natural color grading, crisp sharp focus."
+                )
+
+            default_negative_prompt = (
+                "worst quality, blurry, jittery, distorted, deformed anatomy, artificial, plastic skin, "
+                "CGI, 3d render, low resolution, washed out, flicker, artifacts"
+            )
+
             video_cfg = VideoGenerationConfig(
                 motion_prompt=combined_motion_prompt,
+                negative_prompt=default_negative_prompt,
                 backend=backend_key,
                 num_frames=int(num_frames),
                 fps=24,
@@ -1266,11 +1279,11 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                             scale=1,
                         )
                         t2v_frames = gr.Slider(
-                            label="Frame Count (DiT 8k+1)",
+                            label="Frame Count (DiT 8k+1 | 49 = 2s, 73 = 3s)",
                             minimum=9,
-                            maximum=81,
+                            maximum=97,
                             step=8,
-                            value=17,
+                            value=49,
                             scale=1,
                         )
 
@@ -1296,7 +1309,7 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                                 value="LTX-Video (Fast DiT)",
                             )
                         with gr.Row():
-                            t2v_steps = gr.Slider(label="Inference Steps", minimum=10, maximum=50, step=1, value=15)
+                            t2v_steps = gr.Slider(label="Inference Steps", minimum=10, maximum=50, step=1, value=25)
                             t2v_cfg = gr.Slider(label="CFG Scale", minimum=1.5, maximum=15.0, step=0.5, value=3.5)
                             t2v_motion_scale = gr.Slider(label="Motion Scale", minimum=0.5, maximum=2.0, step=0.1, value=1.0)
                             t2v_seed = gr.Number(label="Seed (-1 for Random)", value=-1, precision=0)
@@ -1385,11 +1398,11 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                             scale=1,
                         )
                         pro_frames = gr.Slider(
-                            label="Frame Count (DiT 8k+1)",
+                            label="Frame Count (DiT 8k+1 | 49 = 2s, 73 = 3s)",
                             minimum=9,
-                            maximum=81,
+                            maximum=97,
                             step=8,
-                            value=17,
+                            value=49,
                             scale=1,
                         )
 
@@ -1420,7 +1433,7 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                             )
                         with gr.Row():
                             pro_lora_scale = gr.Slider(label="LoRA Adapter Weight Scale", minimum=0.1, maximum=1.5, step=0.05, value=0.85)
-                            pro_steps = gr.Slider(label="Inference Steps", minimum=10, maximum=50, step=1, value=15)
+                            pro_steps = gr.Slider(label="Inference Steps", minimum=10, maximum=50, step=1, value=25)
                             pro_cfg = gr.Slider(label="CFG Scale", minimum=1.5, maximum=15.0, step=0.5, value=3.5)
                             pro_motion_scale = gr.Slider(label="Motion Scale", minimum=0.5, maximum=2.0, step=0.1, value=1.0)
                             pro_seed = gr.Number(label="Seed (-1 for Random)", value=-1, precision=0)

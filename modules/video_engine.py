@@ -609,12 +609,11 @@ class LTXVideoBackend(BaseVideoBackend):
 
     def load_model(self, config: Optional[VideoGenerationConfig] = None) -> Any:
         """
-        Stage B: Loads ONLY LTX Transformer + VAE (`text_encoder=None, tokenizer=None`)
+        Stage B: Loads ONLY LTX Transformer + VAE in clean FP16 (`text_encoder=None, tokenizer=None`)
         since prompts are encoded in Stage A and freed before this runs!
-        Total footprint ~4.8 GB (or ~2.2 GB with 4-bit transformer), zero 12.7 GB System RAM OOM.
+        Total footprint ~4.8 GB, preserving crisp natural visual quality with zero 12.7 GB System RAM OOM.
         """
         if self.model is not None:
-            # Verify pipeline wasn't gutted by VRAMManager.purge_models()
             if isinstance(self.model, str) or (
                 hasattr(self.model, "transformer")
                 and getattr(self.model, "transformer", None) is not None
@@ -629,14 +628,13 @@ class LTXVideoBackend(BaseVideoBackend):
                 "LTXVideoBackend is unavailable: Requires CUDA GPU with PyTorch and Diffusers."
             )
 
-        logger.info(f"[LTX Stage B] Loading LTX-Video Transformer & VAE (text_encoder=None) from '{self.MODEL_ID}'...")
+        logger.info(f"[LTX Stage B] Loading FP16 LTX-Video Transformer & VAE (text_encoder=None) from '{self.MODEL_ID}'...")
         torch_dtype = torch.float16
         if self.memory_manager.is_bfloat16_supported():
             torch_dtype = torch.bfloat16
 
         pipeline = None
         last_error: Optional[Exception] = None
-        quant_loaded = False
         try:
             pipeline_cls = getattr(diffusers, "LTXPipeline", None) or \
                            getattr(diffusers, "LTXImageToVideoPipeline", None) or \
@@ -644,38 +642,12 @@ class LTXVideoBackend(BaseVideoBackend):
             
             if pipeline_cls is not None:
                 import gc
-                load_kwargs: Dict[str, Any] = {
-                    "text_encoder": None,
-                    "tokenizer": None,
-                    "torch_dtype": torch_dtype,
-                    "low_cpu_mem_usage": True,
-                }
-                try:
-                    from diffusers import BitsAndBytesConfig as DiffQuantConfig, LTXVideoTransformer3DModel
-                    bnb_diff_cfg = DiffQuantConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_quant_type="nf4",
-                        bnb_4bit_compute_dtype=torch_dtype,
-                        bnb_4bit_use_double_quant=True,
-                    )
-                    logger.info("[LTX Stage B] Loading 4-bit NF4 quantized LTX Transformer directly to GPU...")
-                    transformer_4bit = LTXVideoTransformer3DModel.from_pretrained(
-                        self.MODEL_ID,
-                        subfolder="transformer",
-                        quantization_config=bnb_diff_cfg,
-                        torch_dtype=torch_dtype,
-                        low_cpu_mem_usage=True,
-                    )
-                    load_kwargs["transformer"] = transformer_4bit
-                    quant_loaded = True
-                    gc.collect()
-                    torch.cuda.empty_cache()
-                except Exception as qt_err:
-                    logger.warning(f"[LTX Stage B] 4-bit LTX Transformer skipped ({qt_err}); loading FP16 Transformer.")
-
                 pipeline = pipeline_cls.from_pretrained(
                     self.MODEL_ID,
-                    **load_kwargs,
+                    text_encoder=None,
+                    tokenizer=None,
+                    torch_dtype=torch_dtype,
+                    low_cpu_mem_usage=True,
                 )
                 gc.collect()
         except Exception as e:
@@ -689,14 +661,7 @@ class LTXVideoBackend(BaseVideoBackend):
                 )
             pipeline = "ltx_video_mock_pipeline"
 
-        if quant_loaded:
-            try:
-                if hasattr(pipeline, "vae") and pipeline.vae is not None:
-                    pipeline.vae.to(self.memory_manager.device)
-                logger.info("[LTX Stage B] 4-bit LTX Transformer + FP16 VAE ready on GPU.")
-            except Exception as vae_err:
-                logger.warning(f"Moving VAE to CUDA encountered: {vae_err}")
-        elif hasattr(pipeline, "to"):
+        if hasattr(pipeline, "to"):
             try:
                 pipeline.to(self.memory_manager.device)
                 logger.info("[LTX Stage B] FP16 LTX Transformer + VAE moved cleanly to GPU (~4.8 GB VRAM).")
@@ -711,7 +676,6 @@ class LTXVideoBackend(BaseVideoBackend):
                 pipeline.vae.enable_tiling()
             except Exception:
                 pass
-        self.memory_manager.register_model("ltx_pipeline", pipeline)
         self.model = pipeline
         return self.model
 
@@ -727,6 +691,9 @@ class LTXVideoBackend(BaseVideoBackend):
         if not self.is_available():
             raise RuntimeError("LTXVideoBackend is unavailable: Requires CUDA GPU with PyTorch and Diffusers.")
 
+        # Always start Stage A with zero leftover Transformer/VAE weights so Prompt 2, 3, ... never OOM
+        self.unload_model()
+
         torch_dtype = torch.float16
         if self.memory_manager.is_bfloat16_supported():
             torch_dtype = torch.bfloat16
@@ -734,16 +701,14 @@ class LTXVideoBackend(BaseVideoBackend):
         effective_prompt = motion_prompt or config.motion_prompt or "cinematic motion, photorealistic, high quality"
 
         # Stage A: Encode prompt using T5 FIRST and unload T5 completely BEFORE loading Transformer/VAE!
-        encoded_embeds = None
-        if self.model is None or getattr(self.model, "text_encoder", None) is None:
-            encoded_embeds = self._encode_prompt_isolated(
-                prompt=effective_prompt,
-                negative_prompt=config.negative_prompt,
-                guidance_scale=config.guidance_scale,
-                torch_dtype=torch_dtype,
-            )
+        encoded_embeds = self._encode_prompt_isolated(
+            prompt=effective_prompt,
+            negative_prompt=config.negative_prompt,
+            guidance_scale=config.guidance_scale,
+            torch_dtype=torch_dtype,
+        )
 
-        # Stage B: Load Transformer & VAE (~4.8 GB or ~2.2 GB 4-bit)
+        # Stage B: Load Transformer & VAE in clean FP16 (~4.8 GB)
         model = self.load_model(config)
         pil_img = image if isinstance(image, Image.Image) else (Image.fromarray(image) if image is not None else None)
 
@@ -795,7 +760,6 @@ class LTXVideoBackend(BaseVideoBackend):
                 }
                 if encoded_embeds is not None:
                     pe, pam, npe, npam = encoded_embeds
-                    call_kwargs["prompt"] = None
                     call_kwargs["prompt_embeds"] = pe.to(dev)
                     if "prompt_attention_mask" in sig.parameters and pam is not None:
                         call_kwargs["prompt_attention_mask"] = pam.to(dev)
@@ -838,6 +802,12 @@ class LTXVideoBackend(BaseVideoBackend):
                             active_pipe.unload_lora_weights()
                     except Exception:
                         pass
+                # Always unload LTX Transformer/VAE after generation so 2nd/3rd prompts & 720p upscaling start from 0 GB
+                try:
+                    del active_pipe
+                except Exception:
+                    pass
+                self.unload_model()
 
         if self.memory_manager.is_cuda:
             raise RuntimeError("LTX-Video weights are not active on GPU; cannot run real AI video generation.")
