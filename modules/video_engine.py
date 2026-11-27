@@ -541,14 +541,16 @@ class LTXVideoBackend(BaseVideoBackend):
                            getattr(diffusers, "AutoPipelineForImage2Video", None)
             
             if pipeline_cls is not None:
+                import gc
                 load_kwargs: Dict[str, Any] = {
                     "torch_dtype": torch_dtype,
                     "low_cpu_mem_usage": True,
                 }
-                # Quantize heavy T5-XXL text encoder to 4-bit (~2.5 GB instead of ~10 GB System RAM)
+                # Quantize BOTH heavy T5-XXL text encoder AND LTX Transformer to 4-bit NF4
+                # so total weights stay ~4.5 GB on GPU and System Host RAM stays < 5 GB (no 12.7 GB OOM kill!).
                 try:
-                    from transformers import BitsAndBytesConfig, T5EncoderModel
-                    bnb_cfg = BitsAndBytesConfig(
+                    from transformers import BitsAndBytesConfig as TFQuantConfig, T5EncoderModel
+                    bnb_tf_cfg = TFQuantConfig(
                         load_in_4bit=True,
                         bnb_4bit_quant_type="nf4",
                         bnb_4bit_compute_dtype=torch_dtype,
@@ -558,19 +560,45 @@ class LTXVideoBackend(BaseVideoBackend):
                     text_encoder_4bit = T5EncoderModel.from_pretrained(
                         self.MODEL_ID,
                         subfolder="text_encoder",
-                        quantization_config=bnb_cfg,
+                        quantization_config=bnb_tf_cfg,
                         torch_dtype=torch_dtype,
                         low_cpu_mem_usage=True,
                     )
                     load_kwargs["text_encoder"] = text_encoder_4bit
                     quant_loaded = True
+                    gc.collect()
+                    torch.cuda.empty_cache()
                 except Exception as q_err:
                     logger.warning(f"4-bit T5 quantization skipped ({q_err}); loading standard precision.")
+
+                try:
+                    from diffusers import BitsAndBytesConfig as DiffQuantConfig, LTXVideoTransformer3DModel
+                    bnb_diff_cfg = DiffQuantConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_compute_dtype=torch_dtype,
+                        bnb_4bit_use_double_quant=True,
+                    )
+                    logger.info("Loading 4-bit NF4 quantized LTX Transformer directly to GPU...")
+                    transformer_4bit = LTXVideoTransformer3DModel.from_pretrained(
+                        self.MODEL_ID,
+                        subfolder="transformer",
+                        quantization_config=bnb_diff_cfg,
+                        torch_dtype=torch_dtype,
+                        low_cpu_mem_usage=True,
+                    )
+                    load_kwargs["transformer"] = transformer_4bit
+                    quant_loaded = True
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                except Exception as qt_err:
+                    logger.warning(f"4-bit LTX Transformer quantization skipped ({qt_err}); loading standard precision.")
 
                 pipeline = pipeline_cls.from_pretrained(
                     self.MODEL_ID,
                     **load_kwargs,
                 )
+                gc.collect()
         except Exception as e:
             last_error = e
             logger.warning(f"Direct LTX-Video diffusers loading encountered: {e}")
@@ -582,13 +610,14 @@ class LTXVideoBackend(BaseVideoBackend):
                 )
             pipeline = "ltx_video_mock_pipeline"
 
-        if quant_loaded and hasattr(pipeline, "enable_model_cpu_offload"):
-            # BitsAndBytes 4-bit models work with model CPU offload, not layerwise sequential offload
+        if quant_loaded:
+            # 4-bit quantized components are already on GPU (~4.5 GB total); move only VAE to CUDA (no CPU offload spike!)
             try:
-                pipeline.enable_model_cpu_offload()
-                logger.info("Enabled model CPU offload for 4-bit quantized LTX-Video pipeline.")
-            except Exception as offload_err:
-                logger.warning(f"enable_model_cpu_offload skipped ({offload_err}).")
+                if hasattr(pipeline, "vae") and pipeline.vae is not None:
+                    pipeline.vae.to(self.memory_manager.device)
+                logger.info("4-bit LTX-Video pipeline ready on GPU (zero System RAM offload overhead).")
+            except Exception as vae_err:
+                logger.warning(f"Moving VAE to CUDA encountered: {vae_err}")
         elif hasattr(pipeline, "enable_model_cpu_offload"):
             self.memory_manager.enable_sequential_cpu_offload(pipeline)
         if hasattr(pipeline, "enable_attention_slicing"):
