@@ -523,7 +523,7 @@ class LTXVideoBackend(BaseVideoBackend):
                 "LTXVideoBackend is unavailable: Requires CUDA GPU with PyTorch and Diffusers."
             )
 
-        logger.info(f"Loading LTX-Video Pipeline from '{self.MODEL_ID}'...")
+        logger.info(f"Loading LTX-Video Pipeline from '{self.MODEL_ID}' (4-bit Text Encoder + FP16 DiT)...")
         torch_dtype = torch.float16
         if self.memory_manager.is_bfloat16_supported():
             torch_dtype = torch.bfloat16
@@ -536,10 +536,34 @@ class LTXVideoBackend(BaseVideoBackend):
                            getattr(diffusers, "AutoPipelineForImage2Video", None)
             
             if pipeline_cls is not None:
+                load_kwargs: Dict[str, Any] = {
+                    "torch_dtype": torch_dtype,
+                    "low_cpu_mem_usage": True,
+                }
+                # Quantize heavy T5-XXL text encoder to 4-bit (~2.5 GB instead of ~10 GB System RAM)
+                try:
+                    from transformers import BitsAndBytesConfig, T5EncoderModel
+                    bnb_cfg = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_compute_dtype=torch_dtype,
+                        bnb_4bit_use_double_quant=True,
+                    )
+                    logger.info("Loading 4-bit NF4 quantized T5 text_encoder directly to GPU...")
+                    text_encoder_4bit = T5EncoderModel.from_pretrained(
+                        self.MODEL_ID,
+                        subfolder="text_encoder",
+                        quantization_config=bnb_cfg,
+                        torch_dtype=torch_dtype,
+                        low_cpu_mem_usage=True,
+                    )
+                    load_kwargs["text_encoder"] = text_encoder_4bit
+                except Exception as q_err:
+                    logger.warning(f"4-bit T5 quantization skipped ({q_err}); loading standard precision.")
+
                 pipeline = pipeline_cls.from_pretrained(
                     self.MODEL_ID,
-                    torch_dtype=torch_dtype,
-                    low_cpu_mem_usage=True,
+                    **load_kwargs,
                 )
         except Exception as e:
             last_error = e

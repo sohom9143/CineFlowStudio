@@ -6,6 +6,7 @@ torch>=2.2.0
 torchvision>=0.17.0
 torchaudio>=2.2.0
 accelerate>=0.29.0
+bitsandbytes>=0.43.0
 safetensors>=0.4.2
 
 # Generative Diffusion & Model Architecture
