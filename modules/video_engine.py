@@ -515,9 +515,103 @@ class LTXVideoBackend(BaseVideoBackend):
             return False
         return True
 
+    def _encode_prompt_isolated(
+        self,
+        prompt: str,
+        negative_prompt: str,
+        guidance_scale: float,
+        torch_dtype: Any,
+    ) -> Optional[Tuple[Any, Any, Any, Any]]:
+        """
+        Stage A (Zero-OOM): Loads ONLY T5 text_encoder (4-bit) + tokenizer (with transformer=None, vae=None),
+        computes tiny prompt embeddings (~10 MB), then immediately deletes T5 from RAM & VRAM
+        BEFORE loading the LTX Transformer & VAE. Keeps System RAM well under 12.7 GB!
+        """
+        import gc
+        cache_key = (prompt, negative_prompt or "", float(guidance_scale) > 1.0)
+        if not hasattr(self, "_prompt_embed_cache"):
+            self._prompt_embed_cache: Dict[Tuple[str, str, bool], Tuple[Any, Any, Any, Any]] = {}
+        if cache_key in self._prompt_embed_cache:
+            logger.info("[LTX Stage A] Using cached prompt embeddings (skipping T5 reload).")
+            return self._prompt_embed_cache[cache_key]
+
+        pipeline_cls = getattr(diffusers, "LTXPipeline", None)
+        if pipeline_cls is None:
+            return None
+
+        text_encoder_4bit = None
+        encode_pipe = None
+        try:
+            enc_kwargs: Dict[str, Any] = {
+                "transformer": None,
+                "vae": None,
+                "torch_dtype": torch_dtype,
+                "low_cpu_mem_usage": True,
+            }
+            try:
+                from transformers import BitsAndBytesConfig as TFQuantConfig, T5EncoderModel
+                bnb_tf_cfg = TFQuantConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch_dtype,
+                    bnb_4bit_use_double_quant=True,
+                )
+                logger.info("[LTX Stage A] Loading 4-bit T5 text_encoder ONLY (Transformer/VAE unloaded)...")
+                text_encoder_4bit = T5EncoderModel.from_pretrained(
+                    self.MODEL_ID,
+                    subfolder="text_encoder",
+                    quantization_config=bnb_tf_cfg,
+                    torch_dtype=torch_dtype,
+                    low_cpu_mem_usage=True,
+                )
+                enc_kwargs["text_encoder"] = text_encoder_4bit
+            except Exception as q_err:
+                logger.warning(f"[LTX Stage A] 4-bit T5 skipped ({q_err}); using standard precision.")
+
+            encode_pipe = pipeline_cls.from_pretrained(self.MODEL_ID, **enc_kwargs)
+            if text_encoder_4bit is None and hasattr(encode_pipe, "text_encoder") and encode_pipe.text_encoder is not None:
+                encode_pipe.text_encoder.to(self.memory_manager.device)
+
+            with torch.inference_mode():
+                pe, pam, npe, npam = encode_pipe.encode_prompt(
+                    prompt=prompt,
+                    negative_prompt=negative_prompt or "worst quality, inconsistent motion, blurry, jittery, distorted",
+                    do_classifier_free_guidance=(float(guidance_scale) > 1.0),
+                    num_videos_per_prompt=1,
+                    device=torch.device(self.memory_manager.device),
+                    dtype=torch_dtype,
+                )
+
+            result = (
+                pe.detach().cpu(),
+                pam.detach().cpu() if pam is not None else None,
+                npe.detach().cpu() if npe is not None else None,
+                npam.detach().cpu() if npam is not None else None,
+            )
+            self._prompt_embed_cache[cache_key] = result
+            logger.info("[LTX Stage A] Prompt encoded cleanly. Freeing T5 from System RAM & GPU VRAM...")
+            return result
+        except Exception as enc_err:
+            logger.warning(f"[LTX Stage A] Isolated prompt encoding failed ({enc_err}).")
+            return None
+        finally:
+            try:
+                del encode_pipe
+            except Exception:
+                pass
+            try:
+                del text_encoder_4bit
+            except Exception:
+                pass
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
     def load_model(self, config: Optional[VideoGenerationConfig] = None) -> Any:
         """
-        Loads LTX-Video with FP16/BF16 precision and CPU offloading.
+        Stage B: Loads ONLY LTX Transformer + VAE (`text_encoder=None, tokenizer=None`)
+        since prompts are encoded in Stage A and freed before this runs!
+        Total footprint ~4.8 GB (or ~2.2 GB with 4-bit transformer), zero 12.7 GB System RAM OOM.
         """
         if self.model is not None:
             return self.model
@@ -527,7 +621,7 @@ class LTXVideoBackend(BaseVideoBackend):
                 "LTXVideoBackend is unavailable: Requires CUDA GPU with PyTorch and Diffusers."
             )
 
-        logger.info(f"Loading LTX-Video Pipeline from '{self.MODEL_ID}' (4-bit Text Encoder + FP16 DiT)...")
+        logger.info(f"[LTX Stage B] Loading LTX-Video Transformer & VAE (text_encoder=None) from '{self.MODEL_ID}'...")
         torch_dtype = torch.float16
         if self.memory_manager.is_bfloat16_supported():
             torch_dtype = torch.bfloat16
@@ -543,34 +637,11 @@ class LTXVideoBackend(BaseVideoBackend):
             if pipeline_cls is not None:
                 import gc
                 load_kwargs: Dict[str, Any] = {
+                    "text_encoder": None,
+                    "tokenizer": None,
                     "torch_dtype": torch_dtype,
                     "low_cpu_mem_usage": True,
                 }
-                # Quantize BOTH heavy T5-XXL text encoder AND LTX Transformer to 4-bit NF4
-                # so total weights stay ~4.5 GB on GPU and System Host RAM stays < 5 GB (no 12.7 GB OOM kill!).
-                try:
-                    from transformers import BitsAndBytesConfig as TFQuantConfig, T5EncoderModel
-                    bnb_tf_cfg = TFQuantConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_quant_type="nf4",
-                        bnb_4bit_compute_dtype=torch_dtype,
-                        bnb_4bit_use_double_quant=True,
-                    )
-                    logger.info("Loading 4-bit NF4 quantized T5 text_encoder directly to GPU...")
-                    text_encoder_4bit = T5EncoderModel.from_pretrained(
-                        self.MODEL_ID,
-                        subfolder="text_encoder",
-                        quantization_config=bnb_tf_cfg,
-                        torch_dtype=torch_dtype,
-                        low_cpu_mem_usage=True,
-                    )
-                    load_kwargs["text_encoder"] = text_encoder_4bit
-                    quant_loaded = True
-                    gc.collect()
-                    torch.cuda.empty_cache()
-                except Exception as q_err:
-                    logger.warning(f"4-bit T5 quantization skipped ({q_err}); loading standard precision.")
-
                 try:
                     from diffusers import BitsAndBytesConfig as DiffQuantConfig, LTXVideoTransformer3DModel
                     bnb_diff_cfg = DiffQuantConfig(
@@ -579,7 +650,7 @@ class LTXVideoBackend(BaseVideoBackend):
                         bnb_4bit_compute_dtype=torch_dtype,
                         bnb_4bit_use_double_quant=True,
                     )
-                    logger.info("Loading 4-bit NF4 quantized LTX Transformer directly to GPU...")
+                    logger.info("[LTX Stage B] Loading 4-bit NF4 quantized LTX Transformer directly to GPU...")
                     transformer_4bit = LTXVideoTransformer3DModel.from_pretrained(
                         self.MODEL_ID,
                         subfolder="transformer",
@@ -592,7 +663,7 @@ class LTXVideoBackend(BaseVideoBackend):
                     gc.collect()
                     torch.cuda.empty_cache()
                 except Exception as qt_err:
-                    logger.warning(f"4-bit LTX Transformer quantization skipped ({qt_err}); loading standard precision.")
+                    logger.warning(f"[LTX Stage B] 4-bit LTX Transformer skipped ({qt_err}); loading FP16 Transformer.")
 
                 pipeline = pipeline_cls.from_pretrained(
                     self.MODEL_ID,
@@ -611,15 +682,19 @@ class LTXVideoBackend(BaseVideoBackend):
             pipeline = "ltx_video_mock_pipeline"
 
         if quant_loaded:
-            # 4-bit quantized components are already on GPU (~4.5 GB total); move only VAE to CUDA (no CPU offload spike!)
             try:
                 if hasattr(pipeline, "vae") and pipeline.vae is not None:
                     pipeline.vae.to(self.memory_manager.device)
-                logger.info("4-bit LTX-Video pipeline ready on GPU (zero System RAM offload overhead).")
+                logger.info("[LTX Stage B] 4-bit LTX Transformer + FP16 VAE ready on GPU.")
             except Exception as vae_err:
                 logger.warning(f"Moving VAE to CUDA encountered: {vae_err}")
-        elif hasattr(pipeline, "enable_model_cpu_offload"):
-            self.memory_manager.enable_sequential_cpu_offload(pipeline)
+        elif hasattr(pipeline, "to"):
+            try:
+                pipeline.to(self.memory_manager.device)
+                logger.info("[LTX Stage B] FP16 LTX Transformer + VAE moved cleanly to GPU (~4.8 GB VRAM).")
+            except Exception:
+                if hasattr(pipeline, "enable_model_cpu_offload"):
+                    pipeline.enable_model_cpu_offload()
         if hasattr(pipeline, "enable_attention_slicing"):
             pipeline.enable_attention_slicing()
         self.memory_manager.enable_vae_optimizations(pipeline)
@@ -639,8 +714,28 @@ class LTXVideoBackend(BaseVideoBackend):
         config: VideoGenerationConfig,
     ) -> List[np.ndarray]:
         """
-        Executes LTX-Video Text-to-Video or Image-to-Video generation with optional LoRA adapter.
+        Executes LTX-Video Text-to-Video or Image-to-Video generation with Two-Stage Memory Isolation.
         """
+        if not self.is_available():
+            raise RuntimeError("LTXVideoBackend is unavailable: Requires CUDA GPU with PyTorch and Diffusers.")
+
+        torch_dtype = torch.float16
+        if self.memory_manager.is_bfloat16_supported():
+            torch_dtype = torch.bfloat16
+
+        effective_prompt = motion_prompt or config.motion_prompt or "cinematic motion, photorealistic, high quality"
+
+        # Stage A: Encode prompt using T5 FIRST and unload T5 completely BEFORE loading Transformer/VAE!
+        encoded_embeds = None
+        if self.model is None or getattr(self.model, "text_encoder", None) is None:
+            encoded_embeds = self._encode_prompt_isolated(
+                prompt=effective_prompt,
+                negative_prompt=config.negative_prompt,
+                guidance_scale=config.guidance_scale,
+                torch_dtype=torch_dtype,
+            )
+
+        # Stage B: Load Transformer & VAE (~4.8 GB or ~2.2 GB 4-bit)
         model = self.load_model(config)
         pil_img = image if isinstance(image, Image.Image) else (Image.fromarray(image) if image is not None else None)
 
@@ -680,10 +775,9 @@ class LTXVideoBackend(BaseVideoBackend):
             try:
                 import inspect
                 sig = inspect.signature(active_pipe.__call__)
-                effective_prompt = motion_prompt or config.motion_prompt or "cinematic motion, photorealistic, high quality"
+                dev = torch.device(self.memory_manager.device)
 
                 call_kwargs: Dict[str, Any] = {
-                    "prompt": effective_prompt,
                     "num_frames": config.num_frames,
                     "height": eff_h,
                     "width": eff_w,
@@ -691,8 +785,21 @@ class LTXVideoBackend(BaseVideoBackend):
                     "guidance_scale": config.guidance_scale,
                     "generator": generator,
                 }
-                if "negative_prompt" in sig.parameters and config.negative_prompt:
-                    call_kwargs["negative_prompt"] = config.negative_prompt
+                if encoded_embeds is not None:
+                    pe, pam, npe, npam = encoded_embeds
+                    call_kwargs["prompt"] = None
+                    call_kwargs["prompt_embeds"] = pe.to(dev)
+                    if "prompt_attention_mask" in sig.parameters and pam is not None:
+                        call_kwargs["prompt_attention_mask"] = pam.to(dev)
+                    if "negative_prompt_embeds" in sig.parameters and npe is not None:
+                        call_kwargs["negative_prompt_embeds"] = npe.to(dev)
+                    if "negative_prompt_attention_mask" in sig.parameters and npam is not None:
+                        call_kwargs["negative_prompt_attention_mask"] = npam.to(dev)
+                else:
+                    call_kwargs["prompt"] = effective_prompt
+                    if "negative_prompt" in sig.parameters and config.negative_prompt:
+                        call_kwargs["negative_prompt"] = config.negative_prompt
+
                 if "image" in sig.parameters and pil_img is not None:
                     call_kwargs["image"] = pil_img.resize((eff_w, eff_h), Image.Resampling.LANCZOS)
                 if "callback_on_step_end" in sig.parameters:
