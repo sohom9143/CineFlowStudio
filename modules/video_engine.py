@@ -530,6 +530,7 @@ class LTXVideoBackend(BaseVideoBackend):
 
         pipeline = None
         last_error: Optional[Exception] = None
+        quant_loaded = False
         try:
             pipeline_cls = getattr(diffusers, "LTXPipeline", None) or \
                            getattr(diffusers, "LTXImageToVideoPipeline", None) or \
@@ -558,6 +559,7 @@ class LTXVideoBackend(BaseVideoBackend):
                         low_cpu_mem_usage=True,
                     )
                     load_kwargs["text_encoder"] = text_encoder_4bit
+                    quant_loaded = True
                 except Exception as q_err:
                     logger.warning(f"4-bit T5 quantization skipped ({q_err}); loading standard precision.")
 
@@ -576,7 +578,14 @@ class LTXVideoBackend(BaseVideoBackend):
                 )
             pipeline = "ltx_video_mock_pipeline"
 
-        if hasattr(pipeline, "enable_model_cpu_offload"):
+        if quant_loaded and hasattr(pipeline, "enable_model_cpu_offload"):
+            # BitsAndBytes 4-bit models work with model CPU offload, not layerwise sequential offload
+            try:
+                pipeline.enable_model_cpu_offload()
+                logger.info("Enabled model CPU offload for 4-bit quantized LTX-Video pipeline.")
+            except Exception as offload_err:
+                logger.warning(f"enable_model_cpu_offload skipped ({offload_err}).")
+        elif hasattr(pipeline, "enable_model_cpu_offload"):
             self.memory_manager.enable_sequential_cpu_offload(pipeline)
         if hasattr(pipeline, "enable_attention_slicing"):
             pipeline.enable_attention_slicing()
