@@ -101,7 +101,7 @@ except ImportError:
 # FastAPI & Web Server imports for the 15-Year Designer Studio Interface
 try:
     from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
-    from fastapi.responses import FileResponse, JSONResponse, Response
+    from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
     from fastapi.staticfiles import StaticFiles
     from fastapi.middleware.cors import CORSMiddleware
     import uvicorn
