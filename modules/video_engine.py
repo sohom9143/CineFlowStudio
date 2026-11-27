@@ -131,6 +131,8 @@ class VideoGenerationConfig:
     negative_prompt: str = ""       # Artifact suppression prompt
     enable_cpu_offload: bool = True # Sequential CPU offload for VRAM bounding
     quantization: str = "fp8"       # "fp8", "4bit", "fp16", "none"
+    lora_path: Optional[str] = None # Optional tiny LoRA adapter (.safetensors) for character consistency
+    lora_scale: float = 0.85        # LoRA adapter weight scale
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -157,11 +159,17 @@ def resolve_dimensions(resolution: str = "480p", aspect_ratio: str = "16:9") -> 
         - 720p: 720 x 1280
     """
     res_str = str(resolution).lower()
-    is_portrait = "9:16" in str(aspect_ratio) or "portrait" in str(aspect_ratio).lower() or "vertical" in str(aspect_ratio).lower()
+    ar_str = str(aspect_ratio).lower()
+    is_portrait = "9:16" in ar_str or "portrait" in ar_str or "vertical" in ar_str
+    is_square = "1:1" in ar_str or "square" in ar_str
 
     if "720" in res_str:
+        if is_square:
+            return (768, 768)
         return (720, 1280) if is_portrait else (1280, 720)
-    else:  # Default 480p
+    else:  # Default 480p (divisible by 32/16 for DiT & LTX-Video)
+        if is_square:
+            return (512, 512)
         return (480, 832) if is_portrait else (832, 480)
 
 
@@ -329,7 +337,7 @@ class Wan21Backend(BaseVideoBackend):
     - (4k + 1) temporal framing (default 81 frames).
     """
 
-    MODEL_ID = os.getenv("CINEFLOW_WAN_MODEL_ID", "Wan-AI/Wan2.1-I2V-1.3B-480P")
+    MODEL_ID = os.getenv("CINEFLOW_WAN_MODEL_ID", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
 
     def is_available(self) -> bool:
         """
@@ -523,8 +531,8 @@ class LTXVideoBackend(BaseVideoBackend):
         pipeline = None
         last_error: Optional[Exception] = None
         try:
-            pipeline_cls = getattr(diffusers, "LTXImageToVideoPipeline", None) or \
-                           getattr(diffusers, "LTXPipeline", None) or \
+            pipeline_cls = getattr(diffusers, "LTXPipeline", None) or \
+                           getattr(diffusers, "LTXImageToVideoPipeline", None) or \
                            getattr(diffusers, "AutoPipelineForImage2Video", None)
             
             if pipeline_cls is not None:
@@ -546,7 +554,14 @@ class LTXVideoBackend(BaseVideoBackend):
 
         if hasattr(pipeline, "enable_model_cpu_offload"):
             self.memory_manager.enable_sequential_cpu_offload(pipeline)
+        if hasattr(pipeline, "enable_attention_slicing"):
+            pipeline.enable_attention_slicing()
         self.memory_manager.enable_vae_optimizations(pipeline)
+        if hasattr(pipeline, "vae") and hasattr(pipeline.vae, "enable_tiling"):
+            try:
+                pipeline.vae.enable_tiling()
+            except Exception:
+                pass
         self.memory_manager.register_model("ltx_pipeline", pipeline)
         self.model = pipeline
         return self.model
@@ -558,33 +573,54 @@ class LTXVideoBackend(BaseVideoBackend):
         config: VideoGenerationConfig,
     ) -> List[np.ndarray]:
         """
-        Executes LTX-Video Image-to-Video generation.
+        Executes LTX-Video Text-to-Video or Image-to-Video generation with optional LoRA adapter.
         """
         model = self.load_model(config)
         pil_img = image if isinstance(image, Image.Image) else (Image.fromarray(image) if image is not None else None)
 
-        # Verify frame count satisfies (8k + 1)
+        # Verify frame count satisfies (8k + 1) and dimensions are multiples of 32
         valid, adjusted_frames, msg = validate_frame_count(config.num_frames, backend="ltx-video")
         if not valid:
             logger.warning(msg)
             config.num_frames = adjusted_frames
 
+        eff_w = max(64, (int(config.width) // 32) * 32)
+        eff_h = max(64, (int(config.height) // 32) * 32)
+
         if hasattr(model, "__call__") and not isinstance(model, str):
             generator = None
             if config.seed is not None and config.seed >= 0:
-                generator = torch.Generator(device=self.memory_manager.device).manual_seed(config.seed)
+                generator = torch.Generator(device="cpu").manual_seed(config.seed)
 
-            logger.info(f"Generating {config.num_frames} frames with LTX-Video...")
+            # Switch cleanly between T2V (LTXPipeline) and I2V (LTXImageToVideoPipeline) without reloading weights
+            active_pipe = model
+            if pil_img is not None:
+                i2v_cls = getattr(diffusers, "LTXImageToVideoPipeline", None)
+                if i2v_cls is not None and not isinstance(model, i2v_cls) and hasattr(i2v_cls, "from_pipe"):
+                    active_pipe = i2v_cls.from_pipe(model)
+
+            lora_loaded = False
+            if config.lora_path and os.path.exists(config.lora_path) and hasattr(active_pipe, "load_lora_weights"):
+                try:
+                    logger.info(f"Applying character LoRA adapter: {config.lora_path} (scale={config.lora_scale})")
+                    active_pipe.load_lora_weights(config.lora_path)
+                    if hasattr(active_pipe, "fuse_lora"):
+                        active_pipe.fuse_lora(lora_scale=float(config.lora_scale))
+                    lora_loaded = True
+                except Exception as lora_err:
+                    logger.warning(f"Could not apply LoRA '{config.lora_path}': {lora_err}")
+
+            logger.info(f"Generating {config.num_frames} frames @ {eff_w}x{eff_h} with LTX-Video...")
             try:
                 import inspect
-                sig = inspect.signature(model.__call__)
-                effective_prompt = motion_prompt or config.motion_prompt or "cinematic motion, 8k resolution"
+                sig = inspect.signature(active_pipe.__call__)
+                effective_prompt = motion_prompt or config.motion_prompt or "cinematic motion, photorealistic, high quality"
 
                 call_kwargs: Dict[str, Any] = {
                     "prompt": effective_prompt,
                     "num_frames": config.num_frames,
-                    "height": config.height,
-                    "width": config.width,
+                    "height": eff_h,
+                    "width": eff_w,
                     "num_inference_steps": config.num_inference_steps,
                     "guidance_scale": config.guidance_scale,
                     "generator": generator,
@@ -592,9 +628,9 @@ class LTXVideoBackend(BaseVideoBackend):
                 if "negative_prompt" in sig.parameters and config.negative_prompt:
                     call_kwargs["negative_prompt"] = config.negative_prompt
                 if "image" in sig.parameters and pil_img is not None:
-                    call_kwargs["image"] = pil_img
+                    call_kwargs["image"] = pil_img.resize((eff_w, eff_h), Image.Resampling.LANCZOS)
 
-                output = model(**call_kwargs)
+                output = active_pipe(**call_kwargs)
 
                 raw_frames = output.frames[0] if hasattr(output, "frames") else output
                 rgb_frames: List[np.ndarray] = []
@@ -606,6 +642,15 @@ class LTXVideoBackend(BaseVideoBackend):
                 if self.memory_manager.is_cuda:
                     raise RuntimeError(f"LTX-Video GPU inference failed: {e}") from e
                 logger.warning(f"LTX-Video inference encountered error ({e}); cascading to fallback.")
+            finally:
+                if lora_loaded:
+                    try:
+                        if hasattr(active_pipe, "unfuse_lora"):
+                            active_pipe.unfuse_lora()
+                        if hasattr(active_pipe, "unload_lora_weights"):
+                            active_pipe.unload_lora_weights()
+                    except Exception:
+                        pass
 
         if self.memory_manager.is_cuda:
             raise RuntimeError("LTX-Video weights are not active on GPU; cannot run real AI video generation.")

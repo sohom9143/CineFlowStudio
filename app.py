@@ -76,6 +76,10 @@ from modules.lipsync_engine import (
     synthesize_dialogue_waveform,
     write_wav_file,
 )
+from modules.audio_tts import (
+    synthesize_dialogue_audio,
+    list_voice_choices,
+)
 from modules.post_processing import (
     PostProductionEngine,
     PostProcessingConfig,
@@ -630,6 +634,10 @@ class CineFlowApp:
         motion_scale: float = 1.0,
         seed: Optional[int] = None,
         progress: Optional[Any] = None,
+        dialogue_text: str = "",
+        tts_voice: str = "",
+        lora_path: Optional[str] = None,
+        lora_scale: float = 0.85,
         # Keyword aliases for backwards compatibility with tests
         character_choice: Optional[str] = None,
         style_choice: Optional[str] = None,
@@ -689,8 +697,17 @@ class CineFlowApp:
         )
 
         try:
+            # Optional Indian Bangla / English / Hindi Neural TTS Audio Generation
+            if (not audio_raw or not os.path.exists(str(audio_raw))) and dialogue_text and dialogue_text.strip() and tts_voice:
+                if progress:
+                    progress(0.08, desc="[Audio] Synthesizing Indian Bangla / Neural Voice Dialogue...")
+                try:
+                    audio_raw = synthesize_dialogue_audio(dialogue_text, tts_voice)
+                except Exception as tts_err:
+                    logger.warning(f"TTS synthesis skipped ({tts_err})")
+
             # -----------------------------------------------------------------
-            # Stage 1: Keyframe Preparation (Image-to-Video vs Text-to-Video)
+            # Stage 1: Keyframe Preparation (I2V / Character Map vs Casual T2V)
             # -----------------------------------------------------------------
             img_candidate = input_image or kwargs.get("image") or kwargs.get("keyframe_image")
             keyframe = None
@@ -707,20 +724,47 @@ class CineFlowApp:
                 elif isinstance(img_candidate, np.ndarray):
                     keyframe = Image.fromarray(img_candidate).convert("RGB")
 
+            enrolled_char = self.character_studio.get_character(char_id) if (char_id and char_id != "default") else None
+            resolved_lora = lora_path
+            if not resolved_lora and enrolled_char is not None:
+                cand_lora = os.path.join(self.character_studio.profiles_dir, enrolled_char.id, "lora_adapter.safetensors")
+                if os.path.exists(cand_lora):
+                    resolved_lora = cand_lora
+
+            effective_prompt = scene_prompt
+            if enrolled_char is not None and enrolled_char.prompt_prefix:
+                effective_prompt = f"{enrolled_char.prompt_prefix}, {scene_prompt}".strip(", ")
+
             if keyframe is not None:
-                # Image-to-Video Mode
+                # Image-to-Video Mode (Uploaded Scene Image)
                 if keyframe.size != (base_w, base_h):
                     keyframe = keyframe.resize((base_w, base_h), Image.Resampling.LANCZOS)
                 logger.info(f"Image-to-Video Mode active: Using provided input image ({base_w}x{base_h}).")
                 if progress:
                     progress(0.15, desc="[Stage 1/4] Preparing Input Keyframe Image (I2V)...")
+            elif enrolled_char is not None:
+                # Professional Character Face Mapping Mode
+                if progress:
+                    progress(0.15, desc=f"[Stage 1/4] Mapping Facial Identity for '{enrolled_char.name}'...")
+                keyframe = self.character_studio.generate_character_frame(
+                    character_id=enrolled_char.id,
+                    scene_prompt=scene_prompt,
+                    style_id=style_id,
+                    width=base_w,
+                    height=base_h,
+                    seed=effective_seed,
+                )
+            elif self.memory_manager.is_cuda and backend_key in ("ltx_video", "wan_2_1_fp8"):
+                # Casual Mode Pure Text-to-Video on GPU: do NOT synthesize fake NumPy face canvas
+                keyframe = None
+                if progress:
+                    progress(0.15, desc="[Stage 1/4] Preparing Pure Text-to-Video Conditioning...")
             else:
-                # Text-to-Video Mode
+                # CPU / Mock fallback keyframe
                 if progress:
                     progress(0.1, desc="[Stage 1/4] Synthesizing Scene Keyframe from Prompt...")
-                effective_char = char_id if (char_id and char_id != "default") else ""
                 keyframe = self.character_studio.generate_character_frame(
-                    character_id=effective_char,
+                    character_id="",
                     scene_prompt=scene_prompt,
                     style_id=style_id,
                     width=base_w,
@@ -734,9 +778,13 @@ class CineFlowApp:
             if progress:
                 progress(0.35, desc=f"[Stage 2/4] Generating Video Motion ({backend_key})...")
 
-            effective_motion = motion_prompt or scene_prompt or "Smooth cinematic motion, natural movement."
+            if motion_prompt and effective_prompt:
+                combined_motion_prompt = f"{effective_prompt}. {motion_prompt}".strip()
+            else:
+                combined_motion_prompt = motion_prompt or effective_prompt or "Smooth cinematic motion, natural movement."
+
             video_cfg = VideoGenerationConfig(
-                motion_prompt=effective_motion,
+                motion_prompt=combined_motion_prompt,
                 backend=backend_key,
                 num_frames=int(num_frames),
                 fps=24,
@@ -746,10 +794,12 @@ class CineFlowApp:
                 num_inference_steps=int(inference_steps),
                 guidance_scale=float(guidance_scale),
                 motion_scale=float(motion_scale),
+                lora_path=resolved_lora,
+                lora_scale=float(lora_scale),
             )
             raw_video_frames = self.video_engine.generate_motion(
                 image=keyframe,
-                motion_prompt=effective_motion,
+                motion_prompt=combined_motion_prompt,
                 config=video_cfg,
             )
 
@@ -1143,6 +1193,8 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
     }
     """
 
+    voice_choices = list_voice_choices()
+
     with gr.Blocks(title="CineFlow AI Studio - Video Generator", css=custom_css, theme=gr.themes.Soft()) as demo:
         # Header Banner
         with gr.Row():
@@ -1150,35 +1202,35 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                 """
                 <div class="cinema-header">
                     <h1>🎬 CineFlow AI Studio</h1>
-                    <p>High-Performance Cinematic Video Generator • Text-to-Video & Image-to-Video • Ultra-Low RAM</p>
+                    <p>Casual Text-to-Video &amp; Professional Character Consistency • Face Mapping • LoRA • Indian Bangla Voices</p>
                     <div style="margin-top: 8px;">
-                        <span class="vram-badge">⚡ Wan 2.1 DiT (FP8)</span>
-                        <span class="vram-badge">🚀 High-Speed Passthrough</span>
-                        <span class="vram-badge">🎞️ 24 FPS Cinematic</span>
-                        <span class="vram-badge">🧠 Zero-OOM VRAM Manager</span>
+                        <span class="vram-badge">⚡ LTX-Video / Wan DiT (T4 GPU)</span>
+                        <span class="vram-badge">🧬 InsightFace Face Mapping</span>
+                        <span class="vram-badge">🪶 1-10MB Character LoRA</span>
+                        <span class="vram-badge">🗣️ Indian Bangla Voices</span>
                     </div>
                 </div>
                 """
             )
 
         # ---------------------------------------------------------------------
-        # TAB 1: Text to Video (T2V)
+        # SECTION 1: CASUAL MODE (Pure Text-to-Video, No Characters Mandatory)
         # ---------------------------------------------------------------------
-        with gr.TabItem("✍️ Text to Video", id="tab_t2v"):
+        with gr.TabItem("🎬 Casual Mode (Text to Video)", id="tab_casual"):
             with gr.Row():
                 with gr.Column(scale=6):
-                    gr.Markdown("### 1. Scene Story & Prompts")
+                    gr.Markdown("### 1. Quick Text-to-Video (No Characters Needed)")
                     t2v_prompt = gr.Textbox(
                         label="Scene Prompt (Describe your video)",
-                        placeholder="e.g. A cinematic shot of a misty pine forest at sunrise, soft golden volumetric sunbeams, gentle camera push forward...",
+                        placeholder="e.g. A misty morning in Darjeeling hills, toy train passing through pine forest, golden sunbeams, realistic physics...",
                         lines=4,
-                        value="A cinematic shot of a misty pine forest at sunrise, soft golden volumetric sunbeams filtering through ancient trees, gentle camera push forward.",
+                        value="A cinematic shot of a misty pine forest at sunrise, soft golden volumetric sunbeams filtering through trees, realistic wind physics.",
                     )
                     t2v_motion = gr.Textbox(
-                        label="Camera Motion & Direction (Optional)",
-                        placeholder="e.g. Slow cinematic forward push, gentle panning, soft focal drift",
+                        label="Camera Motion & Physics Direction (Optional)",
+                        placeholder="e.g. Slow cinematic push-in, smooth natural wind physics",
                         lines=1,
-                        value="Slow cinematic push-in camera motion, natural environmental movement.",
+                        value="Slow cinematic push-in camera motion, natural environmental physics.",
                     )
 
                     with gr.Row():
@@ -1191,20 +1243,34 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                         t2v_res = gr.Dropdown(
                             label="Resolution Target",
                             choices=[
-                                "Passthrough (No Upscaling - Ultra Low RAM)",
                                 "720p HD (1280x720)",
+                                "Passthrough (No Upscaling - Ultra Low RAM)",
                                 "1080p Full HD (1920x1080)",
                             ],
-                            value="Passthrough (No Upscaling - Ultra Low RAM)",
+                            value="720p HD (1280x720)",
                             scale=1,
                         )
                         t2v_frames = gr.Slider(
-                            label="Frame Count (DiT 4k+1)",
+                            label="Frame Count (DiT 8k+1)",
                             minimum=9,
                             maximum=81,
-                            step=4,
-                            value=49,
+                            step=8,
+                            value=33,
                             scale=1,
+                        )
+
+                    with gr.Row():
+                        t2v_voice = gr.Dropdown(
+                            label="🗣️ Voice Narration (Indian Bangla / Hindi / English)",
+                            choices=voice_choices,
+                            value="None (Silent Video)",
+                            scale=1,
+                        )
+                        t2v_dialogue = gr.Textbox(
+                            label="Dialogue / Narration Text (Optional)",
+                            placeholder="উদাহরণ: সকালের কুয়াশা ভেদ করে পাহাড়ের পথে এগিয়ে চলেছে ট্রেন...",
+                            lines=1,
+                            scale=2,
                         )
 
                     with gr.Accordion("⚙️ Advanced Parameters (Optional)", open=False):
@@ -1215,96 +1281,201 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                                 value="LTX-Video (Fast DiT)",
                             )
                         with gr.Row():
-                            t2v_steps = gr.Slider(label="Inference Steps", minimum=15, maximum=50, step=1, value=30)
-                            t2v_cfg = gr.Slider(label="CFG Scale", minimum=3.0, maximum=15.0, step=0.5, value=7.5)
+                            t2v_steps = gr.Slider(label="Inference Steps", minimum=15, maximum=50, step=1, value=25)
+                            t2v_cfg = gr.Slider(label="CFG Scale", minimum=1.5, maximum=15.0, step=0.5, value=3.5)
                             t2v_motion_scale = gr.Slider(label="Motion Scale", minimum=0.5, maximum=2.0, step=0.1, value=1.0)
                             t2v_seed = gr.Number(label="Seed (-1 for Random)", value=-1, precision=0)
 
-                    t2v_generate_btn = gr.Button("🚀 Generate Video from Text", variant="primary", size="lg")
+                    t2v_generate_btn = gr.Button("🚀 Generate Casual Video", variant="primary", size="lg")
 
                 with gr.Column(scale=5):
-                    gr.Markdown("### 📺 Master Video Player & Output")
-                    t2v_video_player = gr.Video(label="Generated Cinematic Video", height=380, interactive=False)
+                    gr.Markdown("### 📺 Casual Output Player")
+                    t2v_video_player = gr.Video(label="Generated Video", height=380, interactive=False)
                     t2v_download_btn = gr.File(label="⬇️ Download Video (MP4)", interactive=False)
                     t2v_telemetry = gr.Markdown(value=app_instance.get_telemetry_markdown())
                     t2v_status = gr.Markdown("Ready to generate video.")
 
         # ---------------------------------------------------------------------
-        # TAB 2: Image to Video (I2V)
+        # SECTION 2: PROFESSIONAL MODE (Characters, Face Mapping, LoRA & I2V)
         # ---------------------------------------------------------------------
-        with gr.TabItem("🖼️ Image to Video", id="tab_i2v"):
+        with gr.TabItem("🎥 Professional Mode (Characters & Resources)", id="tab_pro"):
+            with gr.Accordion("🧬 Step 1: Add / Enroll Any Person (Dynamic Face Mapping + LoRA)", open=False):
+                gr.Markdown(
+                    "Upload 1–5 clear photos of **any person** (e.g. Neel, Meghla, etc.) under their exact name. "
+                    "The system extracts a **512-D ArcFace + Facial Landmark Mapping** so every video keeps their face consistent."
+                )
+                with gr.Row():
+                    enroll_name = gr.Textbox(label="Character / Person Name", placeholder="e.g. Neel, Meghla, Souvik...", scale=2)
+                    enroll_gender = gr.Dropdown(label="Gender", choices=["male", "female", "neutral"], value="male", scale=1)
+                    enroll_desc = gr.Textbox(label="Role / Look Description (Optional)", placeholder="e.g. Young Indian man in denim jacket", scale=2)
+                with gr.Row():
+                    enroll_photos = gr.File(
+                        label="Upload Face Photo(s) (1 to 5 images: Front / Side / Expressions)",
+                        file_count="multiple",
+                        file_types=["image"],
+                    )
+                    enroll_lora_file = gr.File(
+                        label="Optional LoRA Adapter (.safetensors, ~1-10 MB)",
+                        file_count="single",
+                        file_types=[".safetensors"],
+                    )
+                with gr.Row():
+                    enroll_btn = gr.Button("🧬 Enroll & Create Face Mapping", variant="primary")
+                    enroll_status = gr.Markdown("Upload face photo(s) & click Enroll to create Face Mapping.")
+
             with gr.Row():
                 with gr.Column(scale=6):
-                    gr.Markdown("### 1. Starting Keyframe Image & Motion")
-                    i2v_image = gr.Image(
-                        label="Upload Input Keyframe Image (Drag & Drop or Click)",
+                    gr.Markdown("### 🎛️ Step 2: Scene, Character, Image & Audio Controls")
+                    with gr.Row():
+                        pro_char = gr.Dropdown(
+                            label="Select Enrolled Character (Optional)",
+                            choices=["None (Scene Image Only)"] + app_instance.get_character_names(),
+                            value="None (Scene Image Only)",
+                            scale=2,
+                        )
+                        pro_refresh_chars_btn = gr.Button("🔄 Refresh Characters", size="sm", scale=1)
+
+                    pro_image = gr.Image(
+                        label="Optional Starting Keyframe / Scene Image (I2V) — Leave empty to use Character Face Map",
                         type="pil",
                     )
-                    i2v_motion = gr.Textbox(
-                        label="Motion Prompt / Animation Instructions",
-                        placeholder="e.g. Subtle wind blowing through hair and clothes, gentle eye blink and smile, slow cinematic drift...",
+                    pro_prompt = gr.Textbox(
+                        label="Scene Prompt (What happens in the scene)",
+                        placeholder="e.g. Walking through Park Street Kolkata in warm evening lights, cinematic realism, Indian face...",
                         lines=3,
-                        value="Gentle atmospheric wind movement, soft cinematic camera drift, natural lighting shifts.",
+                        value="Standing in warm golden evening light in Kolkata, looking naturally at camera, realistic skin texture and physics.",
+                    )
+                    pro_motion = gr.Textbox(
+                        label="Motion & Camera Direction",
+                        placeholder="e.g. Gentle smile, hair moving softly in wind, slow camera push-in",
+                        lines=2,
+                        value="Gentle natural facial expression, soft breeze movement, smooth cinematic camera drift.",
                     )
 
                     with gr.Row():
-                        i2v_aspect = gr.Dropdown(
+                        pro_aspect = gr.Dropdown(
                             label="Aspect Ratio",
                             choices=["16:9 (Landscape)", "9:16 (Portrait / Reels)", "1:1 (Square)"],
-                            value="16:9 (Landscape)",
+                            value="9:16 (Portrait / Reels)",
                             scale=1,
                         )
-                        i2v_res = gr.Dropdown(
+                        pro_res = gr.Dropdown(
                             label="Resolution Target",
                             choices=[
-                                "Passthrough (No Upscaling - Ultra Low RAM)",
                                 "720p HD (1280x720)",
+                                "Passthrough (No Upscaling - Ultra Low RAM)",
                                 "1080p Full HD (1920x1080)",
                             ],
-                            value="Passthrough (No Upscaling - Ultra Low RAM)",
+                            value="720p HD (1280x720)",
                             scale=1,
                         )
-                        i2v_frames = gr.Slider(
-                            label="Frame Count (DiT 4k+1)",
+                        pro_frames = gr.Slider(
+                            label="Frame Count (DiT 8k+1)",
                             minimum=9,
                             maximum=81,
-                            step=4,
-                            value=49,
+                            step=8,
+                            value=33,
                             scale=1,
                         )
 
-                    with gr.Accordion("⚙️ Advanced Parameters (Optional)", open=False):
+                    with gr.Row():
+                        pro_voice = gr.Dropdown(
+                            label="🗣️ AI Voice (Indian Bangla / Hindi / English)",
+                            choices=voice_choices,
+                            value="Bengali (India) - Male (Neel / Bashkar)",
+                            scale=1,
+                        )
+                        pro_dialogue = gr.Textbox(
+                            label="Dialogue Text (Spoken in video + Lip-Sync)",
+                            placeholder="উদাহরণ: নমস্কার, আমি নীল। আজকের গল্পটা এখান থেকেই শুরু।",
+                            lines=1,
+                            scale=2,
+                        )
+                    pro_audio_upload = gr.Audio(
+                        label="OR Upload Custom Audio / Voice (.wav / .mp3)",
+                        type="filepath",
+                    )
+
+                    with gr.Accordion("⚙️ LoRA, Physics & Advanced Parameters", open=False):
                         with gr.Row():
-                            i2v_backend = gr.Radio(
+                            pro_backend = gr.Radio(
                                 label="Video Backend",
                                 choices=["LTX-Video (Fast DiT)", "Wan 2.1 FP8 (Primary DiT)", "Procedural Mock (CPU / Test)"],
                                 value="LTX-Video (Fast DiT)",
                             )
                         with gr.Row():
-                            i2v_steps = gr.Slider(label="Inference Steps", minimum=15, maximum=50, step=1, value=30)
-                            i2v_cfg = gr.Slider(label="CFG Scale", minimum=3.0, maximum=15.0, step=0.5, value=7.5)
-                            i2v_motion_scale = gr.Slider(label="Motion Scale", minimum=0.5, maximum=2.0, step=0.1, value=1.0)
-                            i2v_seed = gr.Number(label="Seed (-1 for Random)", value=-1, precision=0)
+                            pro_lora_scale = gr.Slider(label="LoRA Adapter Weight Scale", minimum=0.1, maximum=1.5, step=0.05, value=0.85)
+                            pro_steps = gr.Slider(label="Inference Steps", minimum=15, maximum=50, step=1, value=25)
+                            pro_cfg = gr.Slider(label="CFG Scale", minimum=1.5, maximum=15.0, step=0.5, value=3.5)
+                            pro_motion_scale = gr.Slider(label="Motion Scale", minimum=0.5, maximum=2.0, step=0.1, value=1.0)
+                            pro_seed = gr.Number(label="Seed (-1 for Random)", value=-1, precision=0)
 
-                    i2v_generate_btn = gr.Button("🚀 Animate Image to Video", variant="primary", size="lg")
+                    pro_generate_btn = gr.Button("🎬 Render Professional Video (720p + Face + Audio)", variant="primary", size="lg")
 
                 with gr.Column(scale=5):
-                    gr.Markdown("### 📺 Master Video Player & Output")
-                    i2v_video_player = gr.Video(label="Generated Cinematic Video", height=380, interactive=False)
-                    i2v_download_btn = gr.File(label="⬇️ Download Video (MP4)", interactive=False)
-                    i2v_telemetry = gr.Markdown(value=app_instance.get_telemetry_markdown())
-                    i2v_status = gr.Markdown("Ready to animate image.")
+                    gr.Markdown("### 📺 Professional Master Player & Output")
+                    pro_video_player = gr.Video(label="Generated Professional Video", height=380, interactive=False)
+                    pro_download_btn = gr.File(label="⬇️ Download Master Video (MP4)", interactive=False)
+                    pro_telemetry = gr.Markdown(value=app_instance.get_telemetry_markdown())
+                    pro_status = gr.Markdown("Ready to render professional video.")
 
         # Bottom Toolbar
         with gr.Row():
             flush_vram_btn = gr.Button("🧹 Flush VRAM Cache", variant="secondary", size="sm")
 
         # Event Bindings
-        def on_generate_t2v(prompt, motion, aspect, res, frames, backend, steps, cfg, motion_scale, seed, progress=gr.Progress()):
+        def on_enroll_character(name, gender, desc, photos, lora_file):
+            if not name or not name.strip():
+                return "⚠️ Please enter the Character / Person Name first.", gr.Dropdown(choices=["None (Scene Image Only)"] + app_instance.get_character_names())
+            if not photos:
+                return "⚠️ Please upload at least 1 clear face photo.", gr.Dropdown(choices=["None (Scene Image Only)"] + app_instance.get_character_names())
+
+            status_msg, _, _, _, _, _ = app_instance.enroll_new_character(
+                name=name,
+                description=desc or "",
+                gender=gender or "neutral",
+                prompt_prefix="",
+                batch_photos=photos if isinstance(photos, list) else [photos],
+            )
+
+            # Save optional custom LoRA adapter (.safetensors) into the enrolled character folder
+            if lora_file is not None:
+                import shutil
+                from modules.character_engine import sanitize_character_slug
+                slug = sanitize_character_slug(name)
+                src_lora = lora_file.name if hasattr(lora_file, "name") else str(lora_file)
+                if os.path.exists(src_lora):
+                    dst_lora = os.path.join(app_instance.character_studio.profiles_dir, slug, "lora_adapter.safetensors")
+                    shutil.copy2(src_lora, dst_lora)
+                    status_msg += f"\n- **LoRA Adapter Attached**: `{dst_lora}`"
+
+            choices = ["None (Scene Image Only)"] + app_instance.get_character_names()
+            slug_choice = choices[-1]
+            from modules.character_engine import sanitize_character_slug
+            slug = sanitize_character_slug(name)
+            for c in choices:
+                if f"({slug})" in c:
+                    slug_choice = c
+                    break
+            return status_msg, gr.Dropdown(choices=choices, value=slug_choice)
+
+        enroll_btn.click(
+            fn=on_enroll_character,
+            inputs=[enroll_name, enroll_gender, enroll_desc, enroll_photos, enroll_lora_file],
+            outputs=[enroll_status, pro_char],
+        )
+
+        def on_refresh_chars():
+            return gr.Dropdown(choices=["None (Scene Image Only)"] + app_instance.get_character_names())
+
+        pro_refresh_chars_btn.click(fn=on_refresh_chars, inputs=[], outputs=[pro_char])
+
+        def on_generate_casual(prompt, motion, aspect, res, frames, voice, dialogue, backend, steps, cfg, motion_scale, seed, progress=gr.Progress()):
             aspect_norm = "16:9" if "16:9" in aspect else ("9:16" if "9:16" in aspect else "1:1")
             effective_seed = int(seed) if seed is not None and seed >= 0 else None
             return app_instance.run_master_pipeline(
                 input_image=None,
+                character_dropdown_val="",
                 scene_prompt=prompt,
                 motion_prompt=motion,
                 aspect_ratio=aspect_norm,
@@ -1315,17 +1486,21 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                 motion_scale=float(motion_scale),
                 backend_choice=backend,
                 seed=effective_seed,
+                dialogue_text=dialogue,
+                tts_voice=voice,
                 progress=progress,
             )
 
         t2v_generate_btn.click(
-            fn=on_generate_t2v,
+            fn=on_generate_casual,
             inputs=[
                 t2v_prompt,
                 t2v_motion,
                 t2v_aspect,
                 t2v_res,
                 t2v_frames,
+                t2v_voice,
+                t2v_dialogue,
                 t2v_backend,
                 t2v_steps,
                 t2v_cfg,
@@ -1340,14 +1515,16 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
             ],
         )
 
-        def on_generate_i2v(image, motion, aspect, res, frames, backend, steps, cfg, motion_scale, seed, progress=gr.Progress()):
-            if image is None:
-                return None, None, app_instance.get_telemetry_markdown(), "⚠️ Please upload an image first for Image-to-Video."
+        def on_generate_pro(char_sel, image, prompt, motion, aspect, res, frames, voice, dialogue, audio_upload, backend, lora_scale, steps, cfg, motion_scale, seed, progress=gr.Progress()):
+            char_val = "" if (not char_sel or "None" in char_sel) else char_sel
+            if image is None and not char_val:
+                return None, None, app_instance.get_telemetry_markdown(), "⚠️ Please select an Enrolled Character OR upload a Starting Scene Image."
             aspect_norm = "16:9" if "16:9" in aspect else ("9:16" if "9:16" in aspect else "1:1")
             effective_seed = int(seed) if seed is not None and seed >= 0 else None
             return app_instance.run_master_pipeline(
                 input_image=image,
-                scene_prompt=motion or "Cinematic motion",
+                character_dropdown_val=char_val,
+                scene_prompt=prompt,
                 motion_prompt=motion,
                 aspect_ratio=aspect_norm,
                 target_resolution_str=res,
@@ -1357,28 +1534,38 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                 motion_scale=float(motion_scale),
                 backend_choice=backend,
                 seed=effective_seed,
+                audio_file_path=audio_upload,
+                dialogue_text=dialogue,
+                tts_voice=voice,
+                lora_scale=float(lora_scale),
                 progress=progress,
             )
 
-        i2v_generate_btn.click(
-            fn=on_generate_i2v,
+        pro_generate_btn.click(
+            fn=on_generate_pro,
             inputs=[
-                i2v_image,
-                i2v_motion,
-                i2v_aspect,
-                i2v_res,
-                i2v_frames,
-                i2v_backend,
-                i2v_steps,
-                i2v_cfg,
-                i2v_motion_scale,
-                i2v_seed,
+                pro_char,
+                pro_image,
+                pro_prompt,
+                pro_motion,
+                pro_aspect,
+                pro_res,
+                pro_frames,
+                pro_voice,
+                pro_dialogue,
+                pro_audio_upload,
+                pro_backend,
+                pro_lora_scale,
+                pro_steps,
+                pro_cfg,
+                pro_motion_scale,
+                pro_seed,
             ],
             outputs=[
-                i2v_video_player,
-                i2v_download_btn,
-                i2v_telemetry,
-                i2v_status,
+                pro_video_player,
+                pro_download_btn,
+                pro_telemetry,
+                pro_status,
             ],
         )
 
@@ -1389,7 +1576,7 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
         flush_vram_btn.click(
             fn=on_flush_vram,
             inputs=[],
-            outputs=[t2v_telemetry, i2v_telemetry],
+            outputs=[t2v_telemetry, pro_telemetry],
         )
 
     return demo
@@ -1705,10 +1892,13 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
             motion = body.get("motion", 5)
             cfg = body.get("cfg", 7.5)
             steps = body.get("steps", 30)
-            model = body.get("model", "wan21")
+            model = body.get("model", "ltx-video")
             aspect_ratio = body.get("aspect_ratio", "16:9")
             resolution = body.get("resolution", "480p")
             image_raw = body.get("image") or body.get("input_image") or body.get("image_url") or body.get("keyframe")
+            dialogue_text = body.get("dialogue_text", "")
+            tts_voice = body.get("tts_voice", "")
+            lora_scale = float(body.get("lora_scale", 0.85))
 
             # If running locally on CPU (or when Colab is active), forward to Google Colab T4 GPU!
             if not app_instance.memory_manager.is_cuda:
@@ -1746,6 +1936,10 @@ def build_fastapi_app(app_instance: CineFlowApp) -> Any:
                 target_resolution_str=target_res_str,
                 aspect_ratio=aspect_ratio,
                 apply_rife_interp=apply_rife,
+                backend_choice=model,
+                dialogue_text=dialogue_text,
+                tts_voice=tts_voice,
+                lora_scale=lora_scale,
             )
 
             if not master_mp4:

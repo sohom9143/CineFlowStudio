@@ -11,13 +11,17 @@ safetensors>=0.4.2
 # Generative Diffusion & Model Architecture
 diffusers>=0.33.0
 transformers>=4.48.0
+accelerate>=0.29.0
+peft>=0.11.0
+huggingface_hub>=0.24.0
 sentencepiece>=0.2.0
 
 # Facial Identity & ArcFace Embeddings (M2)
 insightface>=0.7.3
 onnxruntime>=1.17.0
 
-# Audio Processing & Phoneme Extraction (M4)
+# Audio Processing, Indian Bangla Neural TTS & Phoneme Extraction (M4)
+edge-tts>=6.1.10
 librosa>=0.10.1
 soundfile>=0.12.1
 scipy>=1.11.0
