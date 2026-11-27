@@ -614,7 +614,15 @@ class LTXVideoBackend(BaseVideoBackend):
         Total footprint ~4.8 GB (or ~2.2 GB with 4-bit transformer), zero 12.7 GB System RAM OOM.
         """
         if self.model is not None:
-            return self.model
+            # Verify pipeline wasn't gutted by VRAMManager.purge_models()
+            if isinstance(self.model, str) or (
+                hasattr(self.model, "transformer")
+                and getattr(self.model, "transformer", None) is not None
+                and hasattr(self.model, "vae")
+                and getattr(self.model, "vae", None) is not None
+            ):
+                return self.model
+            self.model = None
 
         if not self.is_available():
             raise RuntimeError(

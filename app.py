@@ -836,10 +836,25 @@ class CineFlowApp:
             final_fps = 60 if rife_raw else 24
 
             is_passthrough = (target_res_norm in ("passthrough", "native"))
+            effective_target_res = target_res_norm
+            if not is_passthrough and target_res_norm == "720p":
+                if "9:16" in str(aspect_ratio_norm):
+                    effective_target_res = "720x1280"
+                elif "1:1" in str(aspect_ratio_norm):
+                    effective_target_res = "768x768"
+
+            if not is_passthrough:
+                # Clear heavy Stage 2 LTX pipeline cleanly before loading RealESRGAN for 720p upscaling
+                for b_obj in self.video_engine.backends.values():
+                    if hasattr(b_obj, "unload_model"):
+                        b_obj.unload_model()
+                flush_memory(aggressive=True)
+
             post_cfg = PostProcessingConfig(
                 enable_upscale=not is_passthrough,
-                target_resolution="passthrough" if is_passthrough else target_res_norm,
+                target_resolution="passthrough" if is_passthrough else effective_target_res,
                 chunk_batch_size=4,
+                tile_size=256,
                 enable_interpolation=rife_raw,
                 target_fps=final_fps,
                 source_fps=24,

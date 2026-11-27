@@ -484,9 +484,9 @@ class VRAMManager:
                 if key in self._registered_models:
                     model = self._registered_models.pop(key)
                     purged_count += 1
-                    if model is not None:
+                    if model is not None and not hasattr(model, "components"):
                         try:
-                            # Attempt to move weights to CPU first to immediately free CUDA buffers
+                            # Only move lightweight single-module models to CPU; diffusers pipelines stay off CPU RAM
                             if hasattr(model, "to") and callable(model.to):
                                 model.to("cpu")
                         except Exception:

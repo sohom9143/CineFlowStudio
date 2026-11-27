@@ -536,6 +536,7 @@ class RealESRGANUpscaler:
                     out_tensor = self._model(tensor)
 
                 out_np = out_tensor.squeeze(0).permute(1, 2, 0).float().cpu().numpy()
+                del tensor, out_tensor
                 out_np = np.clip(out_np * 255.0, 0, 255).astype(np.uint8)
 
                 if out_np.shape[1] != target_tw or out_np.shape[0] != target_th:
