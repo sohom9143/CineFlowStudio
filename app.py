@@ -628,6 +628,8 @@ class CineFlowApp:
         base_resolution_str: str = "640x384 (Fast T4 Base)",
         target_resolution_str: str = "Passthrough (No Upscaling - Ultra Low RAM)",
         num_frames: int = 49,
+        duration_seconds: Optional[float] = None,
+        fps: int = 24,
         apply_rife_interp: bool = False,
         inference_steps: int = 25,
         guidance_scale: float = 7.5,
@@ -662,6 +664,12 @@ class CineFlowApp:
         char_id = self.resolve_character_id(char_raw)
         style_id = self.resolve_style_id(style_raw)
         effective_seed = seed_raw if seed_raw is not None and seed_raw >= 0 else int(time.time() * 1000) % 1_000_000_000
+        effective_fps = max(8, min(60, int(fps or 24)))
+        if duration_seconds is not None and float(duration_seconds) > 0:
+            raw_target_frames = max(9, int(round(float(duration_seconds) * effective_fps)))
+            # Snap to (8k + 1) required by LTX-Video DiT and bound safely for T4 VRAM
+            k_val = max(1, int(round((raw_target_frames - 1) / 8.0)))
+            num_frames = min(121, 8 * k_val + 1)
 
         # Normalization
         raw_backend = str(backend_raw).lower()
@@ -800,7 +808,7 @@ class CineFlowApp:
                 negative_prompt=default_negative_prompt,
                 backend=backend_key,
                 num_frames=int(num_frames),
-                fps=24,
+                fps=effective_fps,
                 width=base_w,
                 height=base_h,
                 seed=effective_seed,
@@ -823,7 +831,7 @@ class CineFlowApp:
                 if progress:
                     progress(0.65, desc="[Stage 3/4] Aligning Dialogue Lip-Sync...")
                 lipsync_cfg = LipSyncConfig(
-                    fps=24,
+                    fps=effective_fps,
                     backend="liveportrait" if self.memory_manager.is_cuda else "mock",
                 )
                 synced_frames, processed_audio_path = self.lipsync_engine.synchronize_lips(
@@ -846,7 +854,7 @@ class CineFlowApp:
             target_res_slug = target_res_norm.lower().replace(" ", "")
             master_filename = f"cineflow_{char_id}_{target_res_slug}_{timestamp_str}.mp4"
             master_output_path = os.path.join(self.masters_dir, master_filename)
-            final_fps = 60 if rife_raw else 24
+            final_fps = 60 if rife_raw else effective_fps
 
             is_passthrough = (target_res_norm in ("passthrough", "native"))
             effective_target_res = target_res_norm
@@ -870,7 +878,7 @@ class CineFlowApp:
                 tile_size=256,
                 enable_interpolation=rife_raw,
                 target_fps=final_fps,
-                source_fps=24,
+                source_fps=effective_fps,
                 crf=18,
                 video_codec="libx264",
                 audio_codec="aac",
@@ -882,6 +890,7 @@ class CineFlowApp:
                 audio_path=processed_audio_path,
                 output_path=master_output_path,
                 config=post_cfg,
+                source_fps=effective_fps,
             )
 
             # Register master video with Cloud Storage (Cloudinary & Firebase RTDB live notify)
@@ -1278,12 +1287,18 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                             value="Passthrough (No Upscaling - Ultra Low RAM)",
                             scale=1,
                         )
-                        t2v_frames = gr.Slider(
-                            label="Frame Count (DiT 8k+1 | 49 = 2s, 73 = 3s)",
-                            minimum=9,
-                            maximum=97,
-                            step=8,
-                            value=49,
+                        t2v_duration = gr.Slider(
+                            label="⏱️ Duration (Seconds)",
+                            minimum=1.0,
+                            maximum=6.0,
+                            step=0.5,
+                            value=2.0,
+                            scale=1,
+                        )
+                        t2v_fps = gr.Dropdown(
+                            label="🎞️ FPS (Frames/Sec)",
+                            choices=[12, 16, 24, 30],
+                            value=16,
                             scale=1,
                         )
 
@@ -1397,12 +1412,18 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                             value="720p HD (1280x720)",
                             scale=1,
                         )
-                        pro_frames = gr.Slider(
-                            label="Frame Count (DiT 8k+1 | 49 = 2s, 73 = 3s)",
-                            minimum=9,
-                            maximum=97,
-                            step=8,
-                            value=49,
+                        pro_duration = gr.Slider(
+                            label="⏱️ Duration (Seconds)",
+                            minimum=1.0,
+                            maximum=6.0,
+                            step=0.5,
+                            value=2.0,
+                            scale=1,
+                        )
+                        pro_fps = gr.Dropdown(
+                            label="🎞️ FPS (Frames/Sec)",
+                            choices=[12, 16, 24, 30],
+                            value=16,
                             scale=1,
                         )
 
@@ -1498,7 +1519,7 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
 
         pro_refresh_chars_btn.click(fn=on_refresh_chars, inputs=[], outputs=[pro_char])
 
-        def on_generate_casual(prompt, motion, aspect, res, frames, voice, dialogue, backend, steps, cfg, motion_scale, seed, progress=gr.Progress()):
+        def on_generate_casual(prompt, motion, aspect, res, duration_s, fps_val, voice, dialogue, backend, steps, cfg, motion_scale, seed, progress=gr.Progress()):
             aspect_norm = "16:9" if "16:9" in aspect else ("9:16" if "9:16" in aspect else "1:1")
             effective_seed = int(seed) if seed is not None and seed >= 0 else None
             return app_instance.run_master_pipeline(
@@ -1508,7 +1529,8 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                 motion_prompt=motion,
                 aspect_ratio=aspect_norm,
                 target_resolution_str=res,
-                num_frames=int(frames),
+                duration_seconds=float(duration_s),
+                fps=int(fps_val),
                 inference_steps=int(steps),
                 guidance_scale=float(cfg),
                 motion_scale=float(motion_scale),
@@ -1526,7 +1548,8 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                 t2v_motion,
                 t2v_aspect,
                 t2v_res,
-                t2v_frames,
+                t2v_duration,
+                t2v_fps,
                 t2v_voice,
                 t2v_dialogue,
                 t2v_backend,
@@ -1543,7 +1566,7 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
             ],
         )
 
-        def on_generate_pro(char_sel, image, prompt, motion, aspect, res, frames, voice, dialogue, audio_upload, backend, lora_scale, steps, cfg, motion_scale, seed, progress=gr.Progress()):
+        def on_generate_pro(char_sel, image, prompt, motion, aspect, res, duration_s, fps_val, voice, dialogue, audio_upload, backend, lora_scale, steps, cfg, motion_scale, seed, progress=gr.Progress()):
             char_val = "" if (not char_sel or "None" in char_sel) else char_sel
             if image is None and not char_val:
                 return None, None, app_instance.get_telemetry_markdown(), "⚠️ Please select an Enrolled Character OR upload a Starting Scene Image."
@@ -1556,7 +1579,8 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                 motion_prompt=motion,
                 aspect_ratio=aspect_norm,
                 target_resolution_str=res,
-                num_frames=int(frames),
+                duration_seconds=float(duration_s),
+                fps=int(fps_val),
                 inference_steps=int(steps),
                 guidance_scale=float(cfg),
                 motion_scale=float(motion_scale),
@@ -1578,7 +1602,8 @@ def build_gradio_ui(app_instance: CineFlowApp) -> gr.Blocks:
                 pro_motion,
                 pro_aspect,
                 pro_res,
-                pro_frames,
+                pro_duration,
+                pro_fps,
                 pro_voice,
                 pro_dialogue,
                 pro_audio_upload,
